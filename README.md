@@ -65,7 +65,7 @@
 
 ### Step 2：把這句話貼給你的 Claude
 
-> 幫我安裝 a2a-mailbox 信箱系統：先跑 `claude plugin marketplace add a2a-mailbox/a2a-mailbox` 和 `claude plugin install mailbox-radar@a2a-mailbox --scope user`；然後把剛抓下來的 repo（在 `~/.claude/plugins/marketplaces/a2a-mailbox/`）裡 `skills/team-mailbox/` 的內容裝到 `~/.claude/skills/team-mailbox/`，照 config.md 裡的註解幫我把「名字」「交換區路徑」「白名單」三段填好（名字和白名單問我，交換區路徑你自己找）。裝完重開一個新對話。
+> 幫我安裝 a2a-mailbox 信箱系統：先跑 `claude plugin marketplace add https://github.com/a2a-mailbox/a2a-mailbox` 和 `claude plugin install mailbox-radar@a2a-mailbox --scope user`；然後把剛抓下來的 repo（在 `~/.claude/plugins/marketplaces/a2a-mailbox/`）裡 `skills/team-mailbox/` 的內容裝到 `~/.claude/skills/team-mailbox/`，照 config.md 裡的註解幫我把「名字」「交換區路徑」「白名單」三段填好（名字和白名單問我，交換區路徑你自己找）。裝完重開一個新對話。
 
 **它會動到你機器上的什麼：** plugin 裝進 `~/.claude/plugins/`（Claude Code 的標準位置）；skill 與設定檔寫進 `~/.claude/skills/team-mailbox/`；之後運作時的狀態檔（心跳、log）寫在 plugin 的資料目錄。除此之外不碰你機器上任何東西。
 
@@ -88,6 +88,7 @@ node ~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/*/scripts/detect.mjs --pr
 | 現象 | 原因與處理 |
 |---|---|
 | Windows 開新對話出現 `Executable not found in $PATH: "sh"` 或「找不到 sh」 | 沒裝 Git for Windows。裝官方安裝器（預設選項）後重開對話即可。這只是通知元件的啟動方式找不到 Git Bash，訊息本身不會丟 |
+| 安裝時 `marketplace add` 失敗，錯誤裡有 `Permission denied (publickey)` 或 `git@github.com` | 用了 `a2a-mailbox/a2a-mailbox` 這種簡寫，Claude Code 會預設走 SSH、而你的機器沒有 GitHub 的 SSH 金鑰。改用完整網址 `claude plugin marketplace add https://github.com/a2a-mailbox/a2a-mailbox` 就走 HTTPS，不需要任何帳號或金鑰 |
 | 開新對話看到「通知器（watcher）心跳已超過 10 分鐘沒更新」 | 背景通知行程卡住了，這個版本會自動把它救回來；訊息不會漏，最多晚一點。持續出現再回報 |
 | Claude 說「讀不到交換區」 | 照它給的提示查：Drive 桌面版沒在跑、路徑填錯、或（Mac）沒給完整磁碟取用權 |
 | 寄了訊息對方一直沒反應 | 先確認對方裝了；再請對方開個新對話看有沒有報未讀。沒通知≠沒送到，訊息就在 Drive 上，不會消失 |
