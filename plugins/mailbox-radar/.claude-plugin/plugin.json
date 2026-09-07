@@ -1,0 +1,15 @@
+{
+  "name": "mailbox-radar",
+  "displayName": "信箱雷達（mailbox radar）",
+  "version": "0.5.1",
+  "description": "偵測 Google Drive 交換區的未讀訊息，並在 session 開場、工具呼叫後、狀態列三個位置提示；訊息落地時喚醒閒置對話。搭配 team-mailbox skill 使用，不修改 skill 本體。支援 macOS 與原生 Windows。",
+  "author": {
+    "name": "a2a-mailbox maintainers",
+    "email": "noreply@example.com"
+  },
+  "keywords": [
+    "team-mailbox",
+    "mailbox",
+    "a2a"
+  ]
+}

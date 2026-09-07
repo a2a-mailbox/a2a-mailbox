@@ -1,0 +1,5 @@
+.DS_Store
+node_modules/
+*.log
+# 丟棄式探針包（含已知 .cmd 編碼問題），只留本機、不進公開 repo
+probe-pack/
