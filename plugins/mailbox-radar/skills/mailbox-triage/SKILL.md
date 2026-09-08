@@ -85,5 +85,6 @@ node S/classify.mjs <訊息檔絕對路徑>
 - 不改 team-mailbox skill 本體；回覆格式與自含 lint 全部照它
 - 不代使用者本人承諾任何時程／決策——分類器說 tier 0 也一樣（那是它漏抓，往上調）
 - 本 skill 的出口只有「交換區回執」與「向使用者報告」，沒有第三種
-- 名單維護：白名單在 team-mailbox skill 的 `config.md`（「白名單：<email> <名字>」
-  一行一人），加人＝所有成員各自在自己機器的 config.md 加一行，不用改 plugin
+- 名單維護：閘門讀的是 `~/.claude/team-mailbox/通訊錄.md`（email｜代稱｜姓名｜來源｜狀態），
+  由 team-mailbox skill 的「通訊錄」段維護（同步／加人／移除）。加人＝所有成員各自在自己機器
+  同步或加一列，不用改 plugin。閘門回「通訊錄是空的」→ 建議使用者說「同步通訊錄」

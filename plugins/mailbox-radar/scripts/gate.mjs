@@ -18,25 +18,36 @@ import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { configPath as defaultConfigPath } from './userdata.mjs';
+import { findContact, loadContacts, readLegacyWhitelist, resolveContactsPath } from './contacts.mjs';
 
-// 白名單住本機（放交換區的話，能寫那個資料夾的人就能把自己加進去，等於沒有名單）。
-// 來源＝使用者資料目錄的 config.md（使用者自填），一行一人：
-//   白名單：<Google email> <名字>
+// 名單住本機（放交換區的話，能寫那個資料夾的人就能把自己加進去，等於沒有名單）。
+// 0.6.0 起來源＝使用者資料目錄的 通訊錄.md（見 contacts.mjs 檔頭）；0.5.x 的 config.md
+// 「白名單：」行由 SessionStart 自動轉入通訊錄。通訊錄還沒建出來之前（轉入尚未發生的那個
+// 空窗）退回讀 config.md 的白名單行，讓純查詢的呼叫端在升級瞬間也答得對。
 // 不放在 plugin 目錄裡：那是版本化快取，更新就被覆蓋。
 
-export function loadWhitelist(configPath = process.env.MAILBOX_RADAR_CONFIG || defaultConfigPath()) {
-  const list = {};
-  try {
-    const raw = readFileSync(configPath, 'utf8');
-    for (const line of raw.split(/\r?\n/)) {
-      const m = line.match(/^白名單\s*[：:]\s*(\S+)\s+(.+)$/);
-      if (m) list[m[1].trim()] = m[2].trim();
-    }
-  } catch {}
-  return list;
+/**
+ * 讀名單。回 contacts.mjs 的陣列形狀（email／aliases／name／source／status）。
+ * 通訊錄不存在時退回 config.md 白名單行（全部視為 manual／active）。
+ */
+export function loadRoster(contactsPath = resolveContactsPath()) {
+  const list = loadContacts(contactsPath);
+  if (list.length > 0) return list;
+  return readLegacyWhitelist().map(({ email, label }) => ({
+    email, aliases: label.split(/\s+/), name: '', source: 'manual', status: 'active',
+  }));
 }
 
+/** 相容 0.5.x 的形狀 {email: 名字}：只含 active 的人。舊呼叫端用；新碼請用 loadRoster。 */
+export function loadWhitelist(contactsPath = resolveContactsPath()) {
+  const out = {};
+  for (const c of loadRoster(contactsPath)) {
+    if (c.status === 'active') out[c.email] = [...c.aliases, c.name].filter(Boolean).join(' ');
+  }
+  return out;
+}
+
+export const ROSTER = loadRoster();
 export const WHITELIST = loadWhitelist();
 
 /**
@@ -67,29 +78,29 @@ export function claimedSender(path) {
   return { frontmatter: fmFrom, filename: fn ? fn[1].trim() : null };
 }
 
-/** 名字（中文名或代稱）→ 白名單 email。找不到回 null。 */
-export function emailForName(name) {
+/** 名字（代稱或姓名）→ email。找不到回 null。left 的人也查得到（對帳要認得出離職者）。 */
+export function emailForName(name, roster = ROSTER) {
   if (!name) return null;
-  for (const [email, label] of Object.entries(WHITELIST)) {
-    if (label.split(/\s+/).some((part) => part === name) || label === name) return email;
-  }
-  return null;
+  return findContact(roster, name)?.email ?? null;
 }
 
-export function verdict(path, ownerEmail) {
+export function verdict(path, ownerEmail, roster = ROSTER) {
   const claimed = claimedSender(path);
   const claimedName = claimed.frontmatter ?? claimed.filename;
-  const inList = ownerEmail ? Object.hasOwn(WHITELIST, ownerEmail) : false;
-  const expectedEmail = emailForName(claimedName);
+  const owner = ownerEmail ? String(ownerEmail).trim().toLowerCase() : null;
+  const entry = owner ? roster.find((c) => c.email === owner) ?? null : null;
+  const inList = !!entry && entry.status === 'active';
+  const expectedEmail = emailForName(claimedName, roster);
 
   const anomalies = [];
-  if (Object.keys(WHITELIST).length === 0) {
-    anomalies.push('白名單未設定（config.md 沒有「白名單：」行）——請使用者把所有成員的 email 與名字填進 team-mailbox 的 config.md');
+  if (roster.length === 0) {
+    anomalies.push('通訊錄是空的（~/.claude/team-mailbox/通訊錄.md 不存在或沒有成員）——請使用者對 Claude 說「同步通訊錄」從 Drive 分享名單帶入，或「通訊錄加人」手動加');
   }
-  if (!ownerEmail) anomalies.push('拿不到 Drive owner（掛載外的檔或 API 失敗）');
-  if (ownerEmail && !inList) anomalies.push(`owner ${ownerEmail} 不在白名單`);
-  if (ownerEmail && expectedEmail && ownerEmail !== expectedEmail) {
-    anomalies.push(`宣稱寄件人 ${claimedName}（應為 ${expectedEmail}）與實際 owner ${ownerEmail} 不一致——from 可能被冒寫`);
+  if (!owner) anomalies.push('拿不到 Drive owner（掛載外的檔或 API 失敗）');
+  if (owner && !entry) anomalies.push(`owner ${owner} 不在通訊錄`);
+  if (owner && entry && entry.status !== 'active') anomalies.push(`owner ${owner}（${[...entry.aliases, entry.name].filter(Boolean).join('／') || '無代稱'}）在通訊錄標記為已離開（left）`);
+  if (owner && expectedEmail && owner !== expectedEmail) {
+    anomalies.push(`宣稱寄件人 ${claimedName}（應為 ${expectedEmail}）與實際 owner ${owner} 不一致——from 可能被冒寫`);
   }
   if (claimed.frontmatter && claimed.filename && claimed.frontmatter !== claimed.filename) {
     anomalies.push(`frontmatter from（${claimed.frontmatter}）與檔名寄件人（${claimed.filename}）不一致`);
@@ -99,8 +110,8 @@ export function verdict(path, ownerEmail) {
   return {
     stage: 'verdict',
     file: basename(path),
-    owner: ownerEmail ?? null,
-    ownerName: inList ? WHITELIST[ownerEmail] : null,
+    owner,
+    ownerName: inList ? ([...entry.aliases, entry.name].filter(Boolean).join(' ') || null) : null,
     claimed,
     pass,
     anomaly: anomalies,

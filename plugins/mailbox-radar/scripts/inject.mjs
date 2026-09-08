@@ -26,7 +26,8 @@ import {
   readHeartbeats, resolveDataDir, sessionKey, sessionWatcherStatus, watcherStatus, watchersDir,
   SESSION_STALE_MS,
 } from './paths.mjs';
-import { configPath, ensureUserData } from './userdata.mjs';
+import { configPath, contactsPath, ensureUserData } from './userdata.mjs';
+import { loadContacts, migrateWhitelist } from './contacts.mjs';
 
 // 搭便車注入的掃描節流：同一個 session 內，最短 SCAN_COOLDOWN_MS 才會再掃一次交換區。
 // 掃一次只要 0.3 毫秒、零 token，所以節流不是為了省成本，是為了不在密集工具呼叫時
@@ -94,14 +95,30 @@ function firstRunGuidance() {
   return [
     '【交換區信箱】信箱雷達已安裝，但還沒設定，所以目前沒有在監看任何交換區。',
     '',
-    `請引導使用者建立 ${configPath()}，裡面需要三種欄位：`,
+    `請引導使用者建立 ${configPath()}，裡面需要兩個欄位：`,
     '  名字：使用者在交換區的代稱，要跟他的收件匣資料夾後綴一致',
     '  交換區：交換區資料夾在這臺機器上的絕對路徑',
-    '  白名單：一行一人，格式是「白名單：<Google email> <名字>」',
     '',
     `範本在 ${template}，可以複製過去再填。`,
-    '名字與白名單要問使用者；交換區路徑可以自己找，通常在 Google Drive 掛載底下的 _交換區。',
-    '設定完成後要開一個新對話才會生效。',
+    '名字要問使用者；交換區路徑可以自己找，通常在 Google Drive 掛載底下的 _交換區。',
+    '設定完成後要開一個新對話才會生效。成員名單（通訊錄）不用現在填：新對話開場會提示，',
+    '到時對 Claude 說「同步通訊錄」就會從 Drive 分享名單帶入。',
+    '如果使用者現在不想處理，回一句知道了就好，不要打斷他手上的事。',
+  ].join('\n');
+}
+
+/**
+ * 「設定好了、但通訊錄是空的」的開場提示。
+ *
+ * 通訊錄空著時雷達照樣偵測未讀（偵測只看檔名），但白名單閘門會把每一封都判成異常、
+ * 一律不自動回覆，而且寄信前查不到對象。這是實際會咬人的狀態，所以每次開場講一次，
+ * 直到名單有人為止；PostToolUse 不講（同 firstRunGuidance 的理由）。
+ */
+function contactsGuidance() {
+  return [
+    `【交換區信箱】通訊錄是空的（${contactsPath()}），所以收進來的訊息都會被當成名單外、不自動回覆，寄信前也查不到對象。`,
+    '請建議使用者對你說「同步通訊錄」：team-mailbox skill 會用 Drive 工具讀交換區的分享名單，把成員的 email、代稱、姓名帶進通訊錄。',
+    '沒有 Drive 工具的話說「通訊錄加人」手動加，一次一人（email 與代稱）。',
     '如果使用者現在不想處理，回一句知道了就好，不要打斷他手上的事。',
   ].join('\n');
 }
@@ -242,6 +259,13 @@ async function main() {
     } catch (err) {
       trace([`搬遷失敗=${String(err?.message ?? err)}`]);
     }
+    // 0.5.x config.md 的「白名單：」行 → 通訊錄.md（0.6.0 task 3）。同樣只在這裡、冪等。
+    try {
+      const mw = migrateWhitelist();
+      if (mw.migrated > 0) trace([`白名單已轉入通訊錄=${mw.migrated}人`]);
+    } catch (err) {
+      trace([`白名單轉入失敗=${String(err?.message ?? err)}`]);
+    }
 
     let result;
     try {
@@ -284,6 +308,13 @@ async function main() {
     let context = formatUnread(result, { mode: 'session', limit: 8 });
     const note = watcherNote(before, w);
     if (note) context = context ? context + '\n\n' + note : note;
+    // 通訊錄空的 → 提示一次（讀取失敗也當空：提示比靜默安全）
+    let rosterEmpty = false;
+    try { rosterEmpty = loadContacts().filter((c) => c.status === 'active').length === 0; } catch { rosterEmpty = true; }
+    if (rosterEmpty) {
+      const g = contactsGuidance();
+      context = context ? context + '\n\n' + g : g;
+    }
 
     // 開場注入的那批算「已告知」，之後搭便車只報這個 session 進行中新落地的
     pruneState(dataDir, now);

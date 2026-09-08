@@ -65,13 +65,13 @@
 
 ### Step 2：把這句話貼給你的 Claude
 
-> 幫我安裝 a2a-mailbox 信箱系統：跑 `claude plugin marketplace add https://github.com/a2a-mailbox/a2a-mailbox` 和 `claude plugin install mailbox-radar@a2a-mailbox --scope user`，然後重開一個新對話。新對話開場會提示還沒設定，請照它的指示幫我建立 `~/.claude/team-mailbox/config.md`，填好「名字」「交換區路徑」「白名單」三段（名字和白名單問我，交換區路徑你自己找）。填完再重開一個新對話。
+> 幫我安裝 a2a-mailbox 信箱系統：跑 `claude plugin marketplace add https://github.com/a2a-mailbox/a2a-mailbox` 和 `claude plugin install mailbox-radar@a2a-mailbox --scope user`，然後重開一個新對話。新對話開場會提示還沒設定，請照它的指示幫我建立 `~/.claude/team-mailbox/config.md`，填好「名字」「交換區路徑」兩段（名字問我，交換區路徑你自己找）。填完再重開一個新對話，開場會提示通訊錄是空的，到時幫我「同步通訊錄」。
 
-**它會動到你機器上的什麼：** plugin（含 skill）裝進 `~/.claude/plugins/`（Claude Code 的標準位置）；你的設定檔與已讀帳寫在 `~/.claude/team-mailbox/`（刻意放在 plugin 之外，更新 plugin 不會碰到它）；之後運作時的狀態檔（心跳、log）寫在 plugin 的資料目錄。除此之外不碰你機器上任何東西。
+**它會動到你機器上的什麼：** plugin（含 skill）裝進 `~/.claude/plugins/`（Claude Code 的標準位置）；你的設定檔、已讀帳與通訊錄寫在 `~/.claude/team-mailbox/`（刻意放在 plugin 之外，更新 plugin 不會碰到它）；之後運作時的狀態檔（心跳、log）寫在 plugin 的資料目錄。除此之外不碰你機器上任何東西。
 
-> 從 0.5.x 升上來的人：舊位置 `~/.claude/skills/team-mailbox/` 裡的 config.md 與 read.md 會在第一次開新對話時自動搬到新位置，舊位置留一個指標檔說明。不用手動搬。
+> 從 0.5.x 升上來的人：舊位置 `~/.claude/skills/team-mailbox/` 裡的 config.md 與 read.md 會在第一次開新對話時自動搬到新位置，舊位置留一個指標檔說明；config.md 裡的「白名單」行會自動轉成通訊錄。都不用手動搬。
 
-**安裝過程它會問你什麼：** 你的名字（要跟交換區收件匣資料夾的後綴一致）、以及所有成員的名字＋Google email（白名單，驗寄件人身分用）。
+**安裝過程它會問你什麼：** 你的名字（要跟交換區收件匣資料夾的後綴一致）。成員名單（通訊錄：每個人的 Google email、代稱、姓名）由 Claude 用 Drive 工具從交換區的分享名單同步進來；沒有 Drive 工具的話它會請你一個一個報。
 
 **怎麼知道裝好了：** 重開新對話後，請 Claude 跑一次偵測器：
 
@@ -94,7 +94,8 @@ node ~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/*/scripts/detect.mjs --pr
 | 開新對話看到「通知器（watcher）心跳已超過 10 分鐘沒更新」 | 背景通知行程卡住了，這個版本會自動把它救回來；訊息不會漏，最多晚一點。持續出現再回報 |
 | Claude 說「讀不到交換區」 | 照它給的提示查：Drive 桌面版沒在跑、路徑填錯、或（Mac）沒給完整磁碟取用權 |
 | 寄了訊息對方一直沒反應 | 先確認對方裝了；再請對方開個新對話看有沒有報未讀。沒通知≠沒送到，訊息就在 Drive 上，不會消失 |
-| 對方的 Claude 不肯自動回我的問題 | 多半是白名單沒把你的 email 填對（要填 Drive 檔案擁有者顯示的那個 Google 帳號） |
+| 對方的 Claude 不肯自動回我的問題 | 多半是對方的通訊錄沒有你、或 email 不對（要是 Drive 檔案擁有者顯示的那個 Google 帳號）。請對方「同步通訊錄」或手動加你 |
+| Claude 說「通訊錄是空的」 | 設定檔填好了但成員名單還沒建。說「同步通訊錄」讓它從 Drive 分享名單帶入；同步時看到「找不到檔案」，先懷疑 Drive 工具綁的 Google 帳號不是被分享的那個 |
 
 ## 回饋
 
