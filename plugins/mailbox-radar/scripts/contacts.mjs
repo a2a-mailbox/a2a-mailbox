@@ -281,8 +281,9 @@ export function mergeFromDrive(list, facts) {
  * @returns {string|null} 要對使用者講的警告；**確實檢查過且沒問題**才回 null
  *
  * 拿不到自己的代稱時**不回 null**：null 的意思是「檢查過、健康」，沒檢查不能冒充健康。
- * 2026-09-08 驗證時實際踩到——第一次同步最可能發生在 config.md 還不存在的時候，
- * 那時靜默回 null 會讓人把「沒檢查」讀成「沒事」，這道防線在唯一該作用的時刻是關的。
+ * 這是設計上的防範，不是修一個觀測到的故障（2026-09-08 驗證時一度以為踩到，後來查明
+ * 那次 config 讀得到、null 是真健康）。推論仍成立：第一次同步可能發生在 config.md 還沒建
+ * 的機器上，那時靜默回 null 會讓人把「沒檢查」讀成「沒事」，所以 null 只能有一個意思。
  */
 export const HEALTH_UNCHECKED = '健檢沒有跑：拿不到你自己的代稱（facts 沒帶 selfName、config.md 也沒有「名字」）。這不代表健康。請在 facts 加 "selfName": "<你的代稱>" 重跑一次 sync（可帶 --dry-run），健檢才會真的檢查你那一列。';
 

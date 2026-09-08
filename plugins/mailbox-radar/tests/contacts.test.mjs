@@ -143,7 +143,8 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   ok('健檢：自己有姓名 → null', C.healthCheck(full, 'Alice') === null);
   ok('健檢：自己沒姓名 → 警告指向查詢問題', /綁錯|重查/.test(C.healthCheck(empty, 'Alice') ?? ''));
   ok('健檢：找不到自己 → 警告', /找不到你自己/.test(C.healthCheck(full, 'Nobody') ?? ''));
-  // 回歸：2026-09-08 驗證踩到——沒 selfName 時曾靜默回 null，被讀成「健康」
+  // null 只能有一個意思（檢查過且健康）。沒 selfName 時曾回 null，會被讀成「健康」——設計缺陷，
+  // 2026-09-08 改掉；當時驗證以為實際踩到，後查明是誤判，但規則本身不變。
   ok('健檢：沒給自己的名字 → 回「沒有跑」的明確字串，不是 null', typeof C.healthCheck(empty, null) === 'string' && /健檢沒有跑/.test(C.healthCheck(empty, null)));
   ok('健檢：沒給自己的名字時，就算名單健康也不回 null', C.healthCheck(full, '') !== null);
 }

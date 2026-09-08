@@ -9,7 +9,9 @@
 //   skill 本體要進 plugin（plugins/mailbox-radar/skills/team-mailbox/），而 plugin 快取
 //   目錄在每次更新時會被整個換掉。使用者資料留在那裡會被更新清掉，所以要搬到快取之外。
 //
-// 搬遷是自動且冪等的：第一次有人讀設定時觸發，搬完在舊位置留一個指標檔。
+// 搬遷是冪等的，但**只在 SessionStart 由 inject.mjs 明確呼叫 ensureUserData() 觸發**，
+// 搬完在舊位置留一個指標檔。取路徑的函式（configPath 等）純讀取、不搬——理由見 userDataPath 的註解。
+// 所以在 SessionStart 之外跑腳本（測試、CLI、狀態列）時新位置可能一直不存在、設定卻讀得到，那是正常的。
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
