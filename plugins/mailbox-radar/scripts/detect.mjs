@@ -16,13 +16,11 @@
 // 也可以被別的腳本 import：`import { detect } from './detect.mjs'`
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const SKILL_DIR = join(homedir(), '.claude', 'skills', 'team-mailbox');
-const CONFIG_PATH = join(SKILL_DIR, 'config.md');
-const READ_LEDGER_PATH = join(SKILL_DIR, 'read.md');
+import { configPath as defaultConfigPath, ledgerPath as defaultLedgerPath } from './userdata.mjs';
+
 const BOARD_DIR = '公告板';
 
 // 交換區規約 v0.4 的檔名 schema 用的前綴
@@ -31,7 +29,7 @@ const COUNTED_EXT = new Set(['.md', '.html']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** 讀 team-mailbox 的 config.md 取「名字」與「交換區」絕對路徑（不要另外寫死路徑）。 */
-export function readConfig(configPath = CONFIG_PATH) {
+export function readConfig(configPath = defaultConfigPath()) {
   const raw = readFileSync(configPath, 'utf8');
   const pick = (label) => {
     const m = raw.match(new RegExp(`^${label}\\s*[：:]\\s*(.+)$`, 'm'));
@@ -54,7 +52,7 @@ export function readConfig(configPath = CONFIG_PATH) {
  * 而算錯的方向是「靜默隱藏一封沒人看過的訊息」——比多報一筆嚴重得多。
  * 檔案不存在（同事剛裝好、還沒讀過任何訊息）視為空帳，不是錯誤。
  */
-export function readLedger(ledgerPath = READ_LEDGER_PATH) {
+export function readLedger(ledgerPath = defaultLedgerPath()) {
   let raw;
   try {
     raw = readFileSync(ledgerPath, 'utf8');
@@ -157,15 +155,15 @@ export function detect(opts = {}) {
 
   let phase = 'config';
   try {
-    // 環境變數覆寫只給測試與除錯用（正式路徑是 ~/.claude/skills/team-mailbox/）
+    // 環境變數覆寫只給測試與除錯用（正式路徑是 ~/.claude/team-mailbox/）
     const { name, exchange } = readConfig(
-      opts.configPath || process.env.MAILBOX_RADAR_CONFIG || CONFIG_PATH,
+      opts.configPath || process.env.MAILBOX_RADAR_CONFIG || defaultConfigPath(),
     );
     result.name = name;
     phase = 'scan';
 
     const ledger = readLedger(
-      opts.ledgerPath || process.env.MAILBOX_RADAR_LEDGER || READ_LEDGER_PATH,
+      opts.ledgerPath || process.env.MAILBOX_RADAR_LEDGER || defaultLedgerPath(),
     );
     result.ledgerCount = ledger.size;
 

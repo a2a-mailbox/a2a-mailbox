@@ -14,19 +14,18 @@
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readConfig, readLedger } from './detect.mjs';
 import { resolveDataDir } from './paths.mjs';
+import { ledgerPath as defaultLedgerPath } from './userdata.mjs';
 
 const STATE = 'readback-state.json';
 
 export function syncReadback(opts = {}) {
   const dataDir = opts.dataDir ?? resolveDataDir();
   const { name, exchange } = readConfig(opts.configPath);
-  const ledgerPath = opts.ledgerPath
-    ?? join(homedir(), '.claude', 'skills', 'team-mailbox', 'read.md');
+  const ledgerPath = opts.ledgerPath ?? defaultLedgerPath();
 
   let raw = '';
   try { raw = readFileSync(ledgerPath, 'utf8'); } catch { /* 沒有帳＝沒東西可鏡射 */ }

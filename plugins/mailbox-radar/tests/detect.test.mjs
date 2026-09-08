@@ -4,11 +4,14 @@ import { join } from 'node:path';
 //   node tests/detect.test.mjs
 // 全部 assertion 過才 exit 0。測試資料寫在系統暫存目錄，不碰真實交換區。
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const { detect } = await import(join(HERE, '..', 'scripts', 'detect.mjs'));
+// 動態 import 一定要轉成 file:// URL：Windows 的絕對路徑（C:\...）會被 ESM loader
+// 當成 protocol 'c:' 而拋 ERR_UNSUPPORTED_ESM_URL_SCHEME。macOS／Linux 的路徑以 /
+// 開頭所以剛好沒事，這個 bug 只在 Windows 現形。
+const { detect } = await import(pathToFileURL(join(HERE, '..', 'scripts', 'detect.mjs')).href);
 
 const root = join(tmpdir(), 'mailbox-radar-test');
 rmSync(root, { recursive: true, force: true });

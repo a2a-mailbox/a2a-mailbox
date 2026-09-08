@@ -61,7 +61,7 @@ node S/classify.mjs <訊息檔絕對路徑>
 
 ### 4. 收尾（每封都做）
 
-- 檔名追加進 `~/.claude/skills/team-mailbox/read.md`（已讀帳），註記處理結果
+- 檔名追加進 `~/.claude/team-mailbox/read.md`（已讀帳），註記處理結果
   （已回覆 tier0／已回覆並待回報 tier1／待本人決定 tier2）
 - 已讀彙總檔（`已讀-<自己>.md`）不用手動管——信箱雷達的 SessionStart hook
   偵測到 read.md 變更會自動鏡射

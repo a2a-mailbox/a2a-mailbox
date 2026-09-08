@@ -21,6 +21,7 @@ import { formatUnread } from './format.mjs';
 import { loadState, pruneState, saveState } from './state.mjs';
 import { FAIL_THRESHOLD, formatWarning, loadHealth, recordFailure, recordSuccess } from './health.mjs';
 import { watcherStatus } from './paths.mjs';
+import { configPath, ensureUserData } from './userdata.mjs';
 
 // 搭便車注入的掃描節流：同一個 session 內，最短 SCAN_COOLDOWN_MS 才會再掃一次交換區。
 // 掃一次只要 0.3 毫秒、零 token，所以節流不是為了省成本，是為了不在密集工具呼叫時
@@ -69,6 +70,36 @@ function emit(context) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: { hookEventName: event, additionalContext: context },
   }) + '\n');
+}
+
+/**
+ * 「裝好了但還沒設定」的開場指示。
+ *
+ * 0.5.x 的假設是 skill 與 plugin 分開裝，所以「沒有 config.md」代表使用者只裝了
+ * plugin、還沒把 skill 複製過去，安靜退出是對的。0.6.0 把 skill 收進 plugin 之後
+ * 這個假設不成立了：裝了 plugin 就一定有 skill，沒有 config.md 只代表還沒填設定。
+ * 繼續安靜退出會讓使用者以為裝壞了（雷達完全沒反應、也不說為什麼），所以改成講一次。
+ *
+ * 只在 SessionStart 講。PostToolUse 維持安靜，否則每次工具呼叫都吵一遍。
+ */
+function firstRunGuidance() {
+  const root = process.env.CLAUDE_PLUGIN_ROOT;
+  const template = root
+    ? join(root, 'skills', 'team-mailbox', 'config.md')
+    : 'plugin 目錄下的 skills/team-mailbox/config.md';
+  return [
+    '【交換區信箱】信箱雷達已安裝，但還沒設定，所以目前沒有在監看任何交換區。',
+    '',
+    `請引導使用者建立 ${configPath()}，裡面需要三種欄位：`,
+    '  名字：使用者在交換區的代稱，要跟他的收件匣資料夾後綴一致',
+    '  交換區：交換區資料夾在這臺機器上的絕對路徑',
+    '  白名單：一行一人，格式是「白名單：<Google email> <名字>」',
+    '',
+    `範本在 ${template}，可以複製過去再填。`,
+    '名字與白名單要問使用者；交換區路徑可以自己找，通常在 Google Drive 掛載底下的 _交換區。',
+    '設定完成後要開一個新對話才會生效。',
+    '如果使用者現在不想處理，回一句知道了就好，不要打斷他手上的事。',
+  ].join('\n');
 }
 
 // ── watcher spawn（Phase 2）──────────────────────────────────
@@ -140,6 +171,15 @@ async function main() {
   } catch {}
 
   if (event === 'SessionStart') {
+    // 使用者資料搬遷（0.5.x 的 ~/.claude/skills/team-mailbox/ → ~/.claude/team-mailbox/）
+    // 只在這裡做：每個 session 開場一次，冪等，而且是明確的寫入動作、不藏在取路徑後面。
+    try {
+      const moved = ensureUserData();
+      if (moved.migrated.length > 0) trace([`使用者資料已搬遷=${moved.migrated.join(',')}`]);
+    } catch (err) {
+      trace([`搬遷失敗=${String(err?.message ?? err)}`]);
+    }
+
     let result;
     try {
       result = detect();
@@ -149,8 +189,10 @@ async function main() {
     }
     if (!result.ok) {
       if (result.errorKind === 'config') {
-        // 同事還沒裝 team-mailbox（沒有 config.md）——這不是故障，安靜退出
-        trace([`偵測失敗（未安裝）=${result.error}`]);
+        // 沒有 config.md＝裝好了但還沒設定（0.6.0 起 skill 隨 plugin 一起來，
+        // 不再有「只裝 plugin 沒裝 skill」這種狀態）。開場提示一次，別讓人以為裝壞了。
+        trace([`未設定=${result.error}`]);
+        emit(firstRunGuidance());
         process.exit(0);
       }
       const w = ensureWatcher(sessionId); // 掛載可能恢復，watcher 照 spawn
@@ -218,7 +260,8 @@ async function main() {
   }
   if (!result.ok) {
     if (result.errorKind === 'config') {
-      trace([`偵測失敗（未安裝）=${result.error}`]);
+      // 還沒設定。這裡不提示——開場已經講過一次，每次工具呼叫再講就是騷擾。
+      trace([`未設定=${result.error}`]);
       process.exit(0);
     }
     const before = loadHealth(dataDir).consecutiveFailures;

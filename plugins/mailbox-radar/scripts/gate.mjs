@@ -15,18 +15,17 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { configPath as defaultConfigPath } from './userdata.mjs';
+
 // 白名單住本機（放交換區的話，能寫那個資料夾的人就能把自己加進去，等於沒有名單）。
-// 來源＝team-mailbox skill 的 config.md（使用者自填），一行一人：
+// 來源＝使用者資料目錄的 config.md（使用者自填），一行一人：
 //   白名單：<Google email> <名字>
 // 不放在 plugin 目錄裡：那是版本化快取，更新就被覆蓋。
-const CONFIG_PATH = process.env.MAILBOX_RADAR_CONFIG
-  || join(homedir(), '.claude', 'skills', 'team-mailbox', 'config.md');
 
-export function loadWhitelist(configPath = CONFIG_PATH) {
+export function loadWhitelist(configPath = process.env.MAILBOX_RADAR_CONFIG || defaultConfigPath()) {
   const list = {};
   try {
     const raw = readFileSync(configPath, 'utf8');
