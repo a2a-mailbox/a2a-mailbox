@@ -143,7 +143,9 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   ok('健檢：自己有姓名 → null', C.healthCheck(full, 'Alice') === null);
   ok('健檢：自己沒姓名 → 警告指向查詢問題', /綁錯|重查/.test(C.healthCheck(empty, 'Alice') ?? ''));
   ok('健檢：找不到自己 → 警告', /找不到你自己/.test(C.healthCheck(full, 'Nobody') ?? ''));
-  ok('健檢：沒給自己的名字 → 不檢查', C.healthCheck(empty, null) === null);
+  // 回歸：2026-09-08 驗證踩到——沒 selfName 時曾靜默回 null，被讀成「健康」
+  ok('健檢：沒給自己的名字 → 回「沒有跑」的明確字串，不是 null', typeof C.healthCheck(empty, null) === 'string' && /健檢沒有跑/.test(C.healthCheck(empty, null)));
+  ok('健檢：沒給自己的名字時，就算名單健康也不回 null', C.healthCheck(full, '') !== null);
 }
 
 // ── 6. config.md 白名單 → 通訊錄（升級轉入）────────────────────
@@ -237,8 +239,16 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   r = run('sync', '--facts', factsPath);
   ok('CLI sync：寫檔、加了 Carol', r.path === cliContacts && r.report.added.includes('carol@example.com'));
   ok('CLI sync：Bob 是 manual、不受 Drive 影響、列入提醒', r.report.manualNotInDrive.includes('bob@example.com'));
-  ok('CLI sync：健檢用 config 的名字（Alice 有姓名）→ null', r.health === null);
+  ok('CLI sync：健檢用 config 的名字（Alice 有姓名）→ null 且 healthChecked true', r.health === null && r.healthChecked === true);
   ok('CLI sync：檔案帶最後同步註記', readFileSync(cliContacts, 'utf8').includes('最後同步'));
+
+  // 沒有 config.md、facts 也沒 selfName → 健檢不能假裝健康
+  const noCfgEnv = { ...env, MAILBOX_RADAR_CONFIG: join(root, 'cli', '不存在的config.md') };
+  const rNo = JSON.parse(execFileSync(process.execPath, [join(SCRIPTS, 'contacts.mjs'), 'sync', '--facts', factsPath, '--dry-run'], { encoding: 'utf8', env: noCfgEnv }));
+  ok('CLI sync：沒 config 也沒 selfName → healthChecked false、health 是明確字串', rNo.healthChecked === false && /健檢沒有跑/.test(rNo.health));
+  writeFileSync(factsPath, JSON.stringify({ ...JSON.parse(readFileSync(factsPath, 'utf8')), selfName: 'Alice' }));
+  const rSelf = JSON.parse(execFileSync(process.execPath, [join(SCRIPTS, 'contacts.mjs'), 'sync', '--facts', factsPath, '--dry-run'], { encoding: 'utf8', env: noCfgEnv }));
+  ok('CLI sync：facts 帶 selfName 就不需要 config', rSelf.healthChecked === true && rSelf.health === null);
 
   // 沒有 remove 對象 → exit 1
   let code = 0;

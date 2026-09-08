@@ -196,7 +196,8 @@ export function removeContact(list, key) {
 //     members: [{ email, role }],            // 交換區父層 permissions：誰有存取權
 //     names:   { "<email>": "<顯示名>" },    // 從 Last Edited By 蒐集到的 email→姓名
 //     folderAliases: ["Alice", "Bob"],       // 收件匣-<代稱> 資料夾名去掉前綴
-//     aliasMap: { "<代稱>": "<email>" }      // 代稱↔email 的對應（自動推得或使用者確認過的）
+//     aliasMap: { "<代稱>": "<email>" },     // 代稱↔email 的對應（檔名署名對 Last Edited By 的證據、或使用者確認的）
+//     selfName: "Alice"                      // 自己的代稱，健檢用；缺了會去讀 config.md 的「名字」，都沒有＝健檢不跑
 //   }
 //
 // 規則（每條都對應一個測試）：
@@ -277,10 +278,16 @@ export function mergeFromDrive(list, facts) {
  * 同步後健檢：自己那一列的姓名必須是滿的。
  * 理由：子資料夾是 setup 時由自己建的，它們的 Last Edited By 一定是自己；連自己都空，
  * 代表查詢本身出了問題（綁錯帳號、工具沒把顯示名印出來），不是「還沒有人傳訊息」。
- * @returns {string|null} 要對使用者講的警告；沒問題回 null
+ * @returns {string|null} 要對使用者講的警告；**確實檢查過且沒問題**才回 null
+ *
+ * 拿不到自己的代稱時**不回 null**：null 的意思是「檢查過、健康」，沒檢查不能冒充健康。
+ * 2026-09-08 驗證時實際踩到——第一次同步最可能發生在 config.md 還不存在的時候，
+ * 那時靜默回 null 會讓人把「沒檢查」讀成「沒事」，這道防線在唯一該作用的時刻是關的。
  */
+export const HEALTH_UNCHECKED = '健檢沒有跑：拿不到你自己的代稱（facts 沒帶 selfName、config.md 也沒有「名字」）。這不代表健康。請在 facts 加 "selfName": "<你的代稱>" 重跑一次 sync（可帶 --dry-run），健檢才會真的檢查你那一列。';
+
 export function healthCheck(list, selfName) {
-  if (!selfName) return null;
+  if (!selfName) return HEALTH_UNCHECKED;
   const me = findContact(list, selfName);
   if (!me) return `通訊錄裡找不到你自己（代稱「${selfName}」）。同步的來源可能不是你的交換區，或代稱對應沒填到自己那一列。`;
   if (!me.name) return `通訊錄裡你自己那一列（${me.email}）姓名是空的。交換區的子資料夾是你建的，Last Edited By 一定有你，所以這不是「還沒人傳訊息」——多半是查詢綁錯 Google 帳號、或工具回傳沒帶顯示名。請重查一次。`;
@@ -372,7 +379,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
           selfName = m ? m[1].trim() : null;
         } catch {}
       }
-      out({ dryRun: dry, path, report, health: healthCheck(list, selfName), contacts: list });
+      const health = healthCheck(list, selfName);
+      out({ dryRun: dry, path, report, healthChecked: !!selfName, health, contacts: list });
     } else if (cmd === 'migrate') {
       out(migrateWhitelist());
     } else {
