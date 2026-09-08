@@ -65,9 +65,11 @@
 
 ### Step 2：把這句話貼給你的 Claude
 
-> 幫我安裝 a2a-mailbox 信箱系統：先跑 `claude plugin marketplace add https://github.com/a2a-mailbox/a2a-mailbox` 和 `claude plugin install mailbox-radar@a2a-mailbox --scope user`；然後把剛抓下來的 repo（在 `~/.claude/plugins/marketplaces/a2a-mailbox/`）裡 `skills/team-mailbox/` 的內容裝到 `~/.claude/skills/team-mailbox/`，照 config.md 裡的註解幫我把「名字」「交換區路徑」「白名單」三段填好（名字和白名單問我，交換區路徑你自己找）。裝完重開一個新對話。
+> 幫我安裝 a2a-mailbox 信箱系統：跑 `claude plugin marketplace add https://github.com/a2a-mailbox/a2a-mailbox` 和 `claude plugin install mailbox-radar@a2a-mailbox --scope user`，然後重開一個新對話。新對話開場會提示還沒設定，請照它的指示幫我建立 `~/.claude/team-mailbox/config.md`，填好「名字」「交換區路徑」「白名單」三段（名字和白名單問我，交換區路徑你自己找）。填完再重開一個新對話。
 
-**它會動到你機器上的什麼：** plugin 裝進 `~/.claude/plugins/`（Claude Code 的標準位置）；skill 與設定檔寫進 `~/.claude/skills/team-mailbox/`；之後運作時的狀態檔（心跳、log）寫在 plugin 的資料目錄。除此之外不碰你機器上任何東西。
+**它會動到你機器上的什麼：** plugin（含 skill）裝進 `~/.claude/plugins/`（Claude Code 的標準位置）；你的設定檔與已讀帳寫在 `~/.claude/team-mailbox/`（刻意放在 plugin 之外，更新 plugin 不會碰到它）；之後運作時的狀態檔（心跳、log）寫在 plugin 的資料目錄。除此之外不碰你機器上任何東西。
+
+> 從 0.5.x 升上來的人：舊位置 `~/.claude/skills/team-mailbox/` 裡的 config.md 與 read.md 會在第一次開新對話時自動搬到新位置，舊位置留一個指標檔說明。不用手動搬。
 
 **安裝過程它會問你什麼：** 你的名字（要跟交換區收件匣資料夾的後綴一致）、以及所有成員的名字＋Google email（白名單，驗寄件人身分用）。
 

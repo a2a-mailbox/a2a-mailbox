@@ -1,26 +1,31 @@
 #!/usr/bin/env node
-// team-mailbox-radar · 注入器
+// mailbox-radar · 注入器
 //
-// 被 hooks.json 以 exec form 呼叫：
-//   node inject.mjs --event SessionStart|PostToolUse
+// 被 hooks.json 以 shell 形式呼叫（0.5.1 起）：
+//   sh noderun.sh inject.mjs --event SessionStart|PostToolUse
 // stdin 收 harness 給的 hook payload（JSON）；stdout 印 hook JSON 輸出。
 //
 // 紀律：
 //   * 沒有未讀 → 完全不輸出（stdout 空的），不製造雜訊
 //   * 任何錯誤都靜默吞掉並 exit 0——注入是加分項，不能讓 hook 失敗干擾使用者的 session
-//   * 一切狀態寫 $CLAUDE_PLUGIN_DATA，不寫進 plugin 安裝目錄（桌面版那是版本化快取）
+//   * 一切狀態寫 data dir（0.6.0 起收斂為 paths.mjs 的單一固定路徑，不再看 CLAUDE_PLUGIN_DATA——
+//     桌面版／CLI 給的值不同會長出兩個平行宇宙），不寫進 plugin 安裝目錄（桌面版那是版本化快取）
+//
+// 0.6.0 接入的三件事：①心跳逐支一檔、復活檢查看本 session 自己的心跳
+// ②開場警告三態化（看 ensureWatcher 的實際回傳值，不看舊心跳）③順手帶起桌鈴（deskbell，全機單例）
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { detect } from './detect.mjs';
 import { formatUnread } from './format.mjs';
 import { loadState, pruneState, saveState } from './state.mjs';
 import { FAIL_THRESHOLD, formatWarning, loadHealth, recordFailure, recordSuccess } from './health.mjs';
-import { watcherStatus } from './paths.mjs';
+import {
+  readHeartbeats, resolveDataDir, sessionKey, sessionWatcherStatus, watcherStatus, watchersDir,
+  SESSION_STALE_MS,
+} from './paths.mjs';
 import { configPath, ensureUserData } from './userdata.mjs';
 
 // 搭便車注入的掃描節流：同一個 session 內，最短 SCAN_COOLDOWN_MS 才會再掃一次交換區。
@@ -34,11 +39,10 @@ const event = (() => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : 'unknown';
 })();
 
-const dataDir = process.env.CLAUDE_PLUGIN_DATA
-  || join(tmpdir(), 'mailbox-radar');
+const dataDir = resolveDataDir();
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 function trace(fields) {
-  // 臨時觀測欄（2026-08-26 驗喚醒層前提，驗完可拆）：hook 行程拿不拿得到 socket
   fields = [...fields,
     `sock=${process.env.CLAUDE_CODE_MESSAGING_SOCKET ? '有' : '無'}`,
     `token=${process.env.CLAUDE_CODE_MESSAGING_TOKEN ? '有' : '無'}`];
@@ -102,51 +106,110 @@ function firstRunGuidance() {
   ].join('\n');
 }
 
-// ── watcher spawn（Phase 2）──────────────────────────────────
+// ── 行程管理共用件 ────────────────────────────────────────────
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function sweepDeadPidFiles(dir) {
+  // 清掃死行程的 pid 檔：行程死了檔不會自己消失，實測堆到 80 個。kill(pid,0)＝只探測不殺
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.pid')) continue;
+      const p = Number(readFileSync(join(dir, f), 'utf8').trim());
+      if (!pidAlive(p)) { try { unlinkSync(join(dir, f)); } catch {} }
+    }
+  } catch {}
+}
+
+function spawnDetached(script, args) {
+  const child = spawn(process.execPath, [join(HERE, script), ...args], {
+    detached: true, stdio: 'ignore', windowsHide: true, // windowsHide：防 Windows 閃 console 視窗
+  });
+  child.unref();
+  return child.pid;
+}
+
+// ── watcher spawn（逐 session 心跳）─────────────────────────────
 // 每個 session 一支，detached；用 pid 檔防同一 session 重複 spawn
 // （SessionStart 在 resume／compact 後可能再度觸發）。
+// 回傳值是狀態字串，SessionStart 的警告三態靠它說話——改字串要跟 watcherNote 同步：
+//   '無socket' | '已在跑' | 'spawn pid=N' | '復活 pid=N' | 'spawn失敗=…'
 function ensureWatcher(sessionId) {
   if (!process.env.CLAUDE_CODE_MESSAGING_SOCKET || !process.env.CLAUDE_CODE_MESSAGING_TOKEN) {
     return '無socket'; // headless 等宿主沒有喚醒路，環境層照常
   }
   try {
-    const watchersDir = join(dataDir, 'watchers');
-    mkdirSync(watchersDir, { recursive: true });
-    // 清掃死行程的 pid 檔（0.4.4）：每 session 留一檔、行程死了檔不會自己消失，
-    // 實測堆到 80 個。kill(pid, 0)＝只探測不殺，探不到就刪檔。
-    try {
-      for (const f of readdirSync(watchersDir)) {
-        if (!f.endsWith('.pid')) continue;
-        const p = Number(readFileSync(join(watchersDir, f), 'utf8').trim());
-        try { process.kill(p, 0); } catch { try { unlinkSync(join(watchersDir, f)); } catch {} }
-      }
-    } catch {}
-    const pidFile = join(watchersDir, `${String(sessionId).replace(/[^A-Za-z0-9_-]/g, '_')}.pid`);
-    // 心跳過期＝這個 data dir 名下所有 watcher 都沒在動（心跳檔是共用的）。
-    // 此時就算 pid 探得到，也視同「活著但卡死」（睡眠喚醒後的常見屍態，0.4.4，
-    // 起因：2026-08-28 實測長壽 session 的 watcher 過夜卡死、pid 檔擋住重生，
-    // 開著的對話整段時間收不到喚醒）。已知殘留限制：若「別的」session 的
-    // watcher 還健康地跳著、本 session 的卡死，共用心跳看不出來——那種情況
-    // 本 session 要等下一次 SessionStart 才復活。
-    const stale = watcherStatus(dataDir) === 'stale';
+    const dir = watchersDir(dataDir);
+    mkdirSync(dir, { recursive: true });
+    sweepDeadPidFiles(dir);
+    const pidFile = join(dir, `${sessionKey(sessionId)}.pid`);
+    // 看**本 session 自己**的心跳。舊版看共用心跳，別的 session 健康就遮住本 session 的死亡。
+    const mine = sessionWatcherStatus(dataDir, sessionId);
+    let stale = mine === 'stale';
     try {
       const oldPid = Number(readFileSync(pidFile, 'utf8').trim());
-      if (oldPid > 0) {
-        process.kill(oldPid, 0); // kill 0＝只探測不殺
+      if (oldPid > 0 && pidAlive(oldPid)) {
+        if (mine === 'never') {
+          // 行程在、卻從沒寫過心跳：剛 spawn 不到一輪是正常的；pid 檔超過 2 分鐘還沒心跳＝殭屍
+          const age = Date.now() - statSync(pidFile).mtimeMs;
+          if (age <= SESSION_STALE_MS) return '已在跑';
+          stale = true;
+        }
         if (!stale) return '已在跑';
         try { process.kill(oldPid, 'SIGTERM'); } catch {} // 卡死屍體，殺掉重生
       }
     } catch {} // 沒 pid 檔或行程已死 → 往下 spawn
-    const script = join(dirname(fileURLToPath(import.meta.url)), 'watcher.mjs');
-    const child = spawn(process.execPath, [script, '--data', dataDir], {
-      detached: true, stdio: 'ignore', windowsHide: true, // windowsHide：防 Windows 閃 console 視窗
-    });
-    child.unref();
-    writeFileSync(pidFile, String(child.pid));
-    return stale ? `復活 pid=${child.pid}` : `spawn pid=${child.pid}`;
+    const pid = spawnDetached('watcher.mjs', ['--data', dataDir, '--session', String(sessionId)]);
+    writeFileSync(pidFile, String(pid));
+    return stale ? `復活 pid=${pid}` : `spawn pid=${pid}`;
   } catch (err) {
     return `spawn失敗=${String(err?.message ?? err)}`;
   }
+}
+
+// ── 桌鈴 spawn ──────────────────────────────────────────────────
+// 全機單例、不綁通道、不隨 session 退出；活到關機或休眠。
+// 每次 hook 順手確認：pid 活著且心跳 2 分鐘內 → 不動；否則帶起來。
+// Windows 上 deskbell.mjs 會自己在啟動時退出（暫無實作），這裡照樣嘗試帶起，
+// 讓 Windows 版做好之後不用改這邊。
+function ensureDeskbell() {
+  try {
+    const dir = watchersDir(dataDir);
+    mkdirSync(dir, { recursive: true });
+    const pidFile = join(dataDir, 'deskbell.pid');
+    let fresh = false;
+    try {
+      const h = JSON.parse(readFileSync(join(dataDir, 'deskbell.heartbeat.json'), 'utf8'));
+      fresh = Date.now() - Date.parse(h.at) <= SESSION_STALE_MS;
+    } catch {}
+    try {
+      const oldPid = Number(readFileSync(pidFile, 'utf8').trim());
+      if (oldPid > 0 && pidAlive(oldPid)) {
+        const age = Date.now() - statSync(pidFile).mtimeMs;
+        if (fresh || age <= SESSION_STALE_MS) return '已在跑';
+        try { process.kill(oldPid, 'SIGTERM'); } catch {}
+      }
+    } catch {}
+    const pid = spawnDetached('deskbell.mjs', ['--data', dataDir]);
+    writeFileSync(pidFile, String(pid));
+    return `spawn pid=${pid}`;
+  } catch (err) {
+    return `spawn失敗=${String(err?.message ?? err)}`;
+  }
+}
+
+/** 開場的通知器狀態說明（三態）。回 null＝什麼都不說。字串前綴與 ensureWatcher 的回傳耦合。 */
+function watcherNote(before, w) {
+  if (w.startsWith('spawn失敗')) {
+    return `【交換區信箱】⚠️ 通知器（watcher）啟動失敗（${w.slice('spawn失敗='.length)}）——訊息落地不會有主動喚醒，只剩開場與工具呼叫後的被動偵測。請用一句話告知使用者。`;
+  }
+  if ((w.startsWith('復活') || w.startsWith('spawn')) && before === 'stale') {
+    const newest = readHeartbeats(dataDir).reduce((m, h) => Math.min(m, h.ageMs), Infinity);
+    const mins = Number.isFinite(newest) ? Math.round(newest / 60000) : null;
+    return `【交換區信箱】通知器安靜了一段時間${mins != null ? `（上次心跳約 ${mins} 分鐘前）` : ''}，本次開場已自動帶起；這段期間落地的訊息已列在上方未讀。這是正常生命週期，不是故障，不用提醒使用者做任何事。`;
+  }
+  return null; // 無socket（headless）／已在跑／首次 spawn（never）→ 沉默
 }
 
 async function main() {
@@ -162,7 +225,7 @@ async function main() {
   try {
     const lockDir = join(dataDir, 'locks');
     mkdirSync(lockDir, { recursive: true });
-    const lockFile = join(lockDir, `${String(sessionId).replace(/[^A-Za-z0-9_-]/g, '_')}-${event}.lock`);
+    const lockFile = join(lockDir, `${sessionKey(sessionId)}-${event}.lock`);
     try {
       const prev = Number(readFileSync(lockFile, 'utf8'));
       if (Number.isFinite(prev) && now - prev < 5000) process.exit(0);
@@ -196,18 +259,21 @@ async function main() {
         process.exit(0);
       }
       const w = ensureWatcher(sessionId); // 掛載可能恢復，watcher 照 spawn
-      // 有裝但讀不到交換區：記一次失敗，達門檻就在開場講出來（task 6）
+      const b = ensureDeskbell();
+      // 有裝但讀不到交換區：記一次失敗，達門檻就在開場講出來
       const h = recordFailure(dataDir, result.error);
-      trace([`watcher=${w}`]);
+      trace([`watcher=${w}`, `deskbell=${b}`]);
       trace([`偵測失敗=${result.error}`, `連續失敗=${h.consecutiveFailures}`]);
       const warning = formatWarning(h);
       if (warning) emit(warning);
       process.exit(0);
     }
     recordSuccess(dataDir);
+    const before = watcherStatus(dataDir); // 先量、再動手——三態說明要知道「之前是不是安靜了一段」
     const w = ensureWatcher(sessionId);
+    const b = ensureDeskbell();
 
-    // 已讀回寫（Phase 3）：read.md 變了才鏡射到交換區彙總檔，沒變零成本
+    // 已讀回寫：read.md 變了才鏡射到交換區彙總檔，沒變零成本
     try {
       const { syncReadback } = await import('./readback.mjs');
       syncReadback({ dataDir });
@@ -216,12 +282,8 @@ async function main() {
     }
 
     let context = formatUnread(result, { mode: 'session', limit: 8 });
-    // 通知器可見性（Phase 2）：心跳過期＝這臺機器現在沒有任何 monitor 在看信箱。
-    // 'never'（從沒跑過）不警告——headless 或不支援 monitor 的宿主本來就沒有
-    if (watcherStatus(dataDir) === 'stale') {
-      const note = '【交換區信箱】⚠️ 通知器（watcher）心跳已超過 10 分鐘沒更新——訊息落地時不會再有主動喚醒，只剩開場與工具呼叫後的被動偵測。請用一句話告知使用者；重開一個對話通常會自動把它帶起來。';
-      context = context ? context + '\n\n' + note : note;
-    }
+    const note = watcherNote(before, w);
+    if (note) context = context ? context + '\n\n' + note : note;
 
     // 開場注入的那批算「已告知」，之後搭便車只報這個 session 進行中新落地的
     pruneState(dataDir, now);
@@ -237,14 +299,15 @@ async function main() {
       `耗時=${result.elapsedMs.toFixed(2)}ms`,
       `注入=${context ? '是' : '否'}`,
       `watcher=${w}`,
+      `before=${before}`,
+      `deskbell=${b}`,
     ]);
     if (context) emit(context);
     process.exit(0);
   }
 
   // ── PostToolUse：搭便車偵測 ──────────────────────────────────
-  // 職責已在子 Plan 決策 3 降級為「watcher 死掉的安全網」：只報新落地的，
-  // 沒有新東西就一個字都不輸出。
+  // 職責是「watcher 死掉的安全網」：只報新落地的，沒有新東西就一個字都不輸出。
   const state = loadState(dataDir, sessionId);
 
   if (now - state.lastScanAt < SCAN_COOLDOWN_MS) {
@@ -280,12 +343,14 @@ async function main() {
   }
   recordSuccess(dataDir);
 
-  // watcher 自我復活（0.4.4）：原本只有 SessionStart 會 spawn，長壽 session 的
-  // watcher 死了就永遠沒人管。這裡在每次（節流後的）搭便車掃描順手檢查心跳，
-  // 不健康就帶起來——「每個開著的對話都有一支活的 watcher」從此成立。
-  if (watcherStatus(dataDir) !== 'alive') {
+  // watcher 自我復活（改看本 session 自己的心跳）：原本只有 SessionStart 會 spawn，
+  // 長壽 session 的 watcher 死了就永遠沒人管。這裡在每次（節流後的）搭便車掃描順手檢查，
+  // 不健康就帶起來——「每個開著的對話都有一支活的 watcher」從此成立，且不被別的對話遮蔽。
+  if (sessionWatcherStatus(dataDir, sessionId) !== 'alive') {
     trace([`watcher復活檢查=${ensureWatcher(sessionId)}`]);
   }
+  const b = ensureDeskbell();
+  if (b !== '已在跑') trace([`deskbell=${b}`]);
 
   const fresh = result.unread.filter((u) => !state.announced.has(u.file));
   state.lastScanAt = now;
