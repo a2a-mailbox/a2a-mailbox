@@ -19,8 +19,7 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkS
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { detect } from './detect.mjs';
-import { formatUnread, shownFiles } from './format.mjs';
-import { markRead } from './markread.mjs';
+import { formatUnread } from './format.mjs';
 import { loadState, pruneState, saveState } from './state.mjs';
 import { FAIL_THRESHOLD, formatWarning, loadHealth, recordFailure, recordSuccess } from './health.mjs';
 import {
@@ -35,8 +34,7 @@ import { loadContacts, migrateWhitelist } from './contacts.mjs';
 // 對 Drive 掛載連發 readdir。10 秒的上限對「30 分鐘太久」這個需求還有很大餘裕。
 const SCAN_COOLDOWN_MS = 10_000;
 
-// 一次最多具體列幾筆。記帳只記被列出來的，所以這兩個常數必須同時餵給
-// formatUnread 與 shownFiles——不一致就會出現「沒被列出來卻被標成已讀」。
+// 一次最多具體列幾筆，其餘收成「另有 N 筆較舊的未列出」。
 const SESSION_LIMIT = 8;
 const INLINE_LIMIT = 5;
 
@@ -126,6 +124,31 @@ function contactsGuidance() {
     '請建議使用者對你說「同步通訊錄」：team-mailbox skill 會用 Drive 工具讀交換區的分享名單，把成員的 email、代稱、姓名帶進通訊錄。',
     '沒有 Drive 工具的話說「通訊錄加人」手動加，一次一人（email 與代稱）。',
     '如果使用者現在不想處理，回一句知道了就好，不要打斷他手上的事。',
+  ].join('\n');
+}
+
+/**
+ * 未讀清單後面附的記帳指示。
+ *
+ * 為什麼要在每次注入時講一次，而不是只寫在 skill 裡：未讀數的語意是「人還沒處理」。
+ * 要維持這個語意，記帳必須發生在人真的處理過之後，而那個時機只有當下這個對話知道。
+ * 雷達自己記＝用機器行為冒充人的行為；只寫在 skill 裡＝使用者沒喊「查信箱」時沒人記。
+ * 所以指示要跟著未讀清單一起送到，就在該記帳的那個對話裡。
+ *
+ * 0.5.x 沒有這一步，記帳只是 skill 裡一句散文。實測結果是它幾乎不發生：2026-09-10
+ * 查到一臺機器的已讀帳停在 07-21，之後兩個月的 45 封一筆都沒記，雷達因此在每個對話
+ * 都虛報 58 封未讀，真實數字是 6 封。使用者的說法是「我確實有看過也確實已讀了，
+ * 但是它還是報未讀」——問題在記帳不可靠，不在記帳時機。
+ */
+function markReadHint() {
+  const root = process.env.CLAUDE_PLUGIN_ROOT;
+  const script = root ? join(root, 'scripts', 'markread.mjs') : '<plugin>/scripts/markread.mjs';
+  return [
+    '【記帳】上面這些**還沒**被標記為已讀——你把它們列出來不算，要使用者真的看過或處理過才算。',
+    '使用者在這一輪確實處理了其中某幾封之後（讀完了、回覆了、決定不處理了都算），跑：',
+    `  node "${script}" --note "<處理結果>" <檔名> [<檔名>...]`,
+    '看到回報的 added 有值才算記成功。沒記的話下次開場還會再報一次，那是正確行為。',
+    '使用者只是聽你講了一句「有幾封未讀」就繼續做別的事 → 不要記帳。',
   ].join('\n');
 }
 
@@ -303,23 +326,20 @@ async function main() {
     const w = ensureWatcher(sessionId);
     const b = ensureDeskbell();
 
-    // 已讀記帳：把這一輪**具體列出來**的那些記進 read.md。
+    // ⚠️ 這裡刻意**不**自動記帳。
     //
-    // 這對應交換區規約的「已掃到」＝機器事實（我的 agent 讀進去了），不是「已告知人」。
-    // 被收成「另有 N 筆較舊的未列出」的那些不記——它們沒出現在任何人眼前。
+    // 未讀數的意思是「人還沒處理」，不是「機器還沒報過」。開場把訊息列出來只證明
+    // 雷達掃到了，不證明人看了——很多時候使用者正在忙別的事，那一行根本沒被讀進眼睛。
+    // 在這裡記帳等於用機器行為冒充人的行為，訊息會從清單裡消失而沒有人看過它。
     //
-    // 0.5.x 沒有這一步，記帳是 skill 裡一句要 Claude 自己記得做的散文指示。實測的結果是
-    // 它幾乎不發生：2026-09-10 查到一臺機器的已讀帳停在 07-21，之後兩個月的 45 封一筆
-    // 都沒記，雷達因此在每個對話虛報 58 封未讀（真實 6 封）。數字只會漲、永遠不會降。
+    // 0.6.0 開發中一度做成「報過就算已讀」，使用者當場推翻：他要的是人真的看過才算。
+    // 他遇到的問題不是「數字降不下來」，是「我確實看過也處理了，它還是報未讀」——
+    // 那是記帳機制不可靠，不是記帳時機太晚。修法在 markread.mjs（把散文指示換成腳本），
+    // 不是把記帳提前到人還沒看的時候。
     //
-    // 要在 readback 之前做，交換區的彙總檔才會在同一輪就反映出來。
-    const shown = shownFiles(result, { limit: SESSION_LIMIT });
-    let marked = { added: [] };
-    try {
-      marked = markRead(shown.map((u) => u.file), { note: '開場報過' });
-    } catch (err) {
-      trace([`記帳失敗=${String(err?.message ?? err)}`]);
-    }
+    // 真正該記帳的時機有兩個，都在人實際處理過之後：
+    //   1. 使用者看完這批未讀、你在同一輪替他處理掉 → 照下面注入的指示呼叫 markread.mjs
+    //   2. 走 team-mailbox skill 的「查信箱」流程 → 該 skill 第 4 步呼叫 markread.mjs
 
     // 已讀回寫：read.md 變了才鏡射到交換區彙總檔，沒變零成本
     try {
@@ -330,6 +350,7 @@ async function main() {
     }
 
     let context = formatUnread(result, { mode: 'session', limit: SESSION_LIMIT });
+    if (context) context += '\n\n' + markReadHint();
     const note = watcherNote(before, w);
     if (note) context = context ? context + '\n\n' + note : note;
     // 通訊錄空的 → 提示一次（讀取失敗也當空：提示比靜默安全）
@@ -353,7 +374,6 @@ async function main() {
       `已讀帳=${result.ledgerCount}`,
       `耗時=${result.elapsedMs.toFixed(2)}ms`,
       `注入=${context ? '是' : '否'}`,
-      `記帳=${marked.added.length}`,
       `watcher=${w}`,
       `before=${before}`,
       `deskbell=${b}`,
@@ -418,24 +438,16 @@ async function main() {
     process.exit(0);
   }
 
+  // 同 SessionStart：不自動記帳。搭便車報出來的訊息更不可能「已經被人看過」——
+  // 使用者當下正在做別的事，這行字是插進來的。
   const freshResult = { ...result, unread: fresh, unreadCount: fresh.length };
   const context = formatUnread(freshResult, { mode: 'inline', limit: INLINE_LIMIT });
-
-  // 同 SessionStart：只記真的被列出來的那些。這裡不跑 readback（搭便車要夠輕），
-  // 所以交換區的彙總檔會等到下一次 SessionStart 才跟上，那是可接受的延遲。
-  let marked = { added: [] };
-  try {
-    marked = markRead(shownFiles(freshResult, { limit: INLINE_LIMIT }).map((u) => u.file), { note: '工作中報過' });
-  } catch (err) {
-    trace([`記帳失敗=${String(err?.message ?? err)}`]);
-  }
 
   trace([
     `session=${sessionId}`,
     `tool=${payload.tool_name ?? '-'}`,
     `未讀=${result.unreadCount}`,
     `新落地=${fresh.length}`,
-    `記帳=${marked.added.length}`,
     `耗時=${result.elapsedMs.toFixed(2)}ms`,
     '注入=是',
   ]);
