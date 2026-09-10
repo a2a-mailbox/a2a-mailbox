@@ -19,7 +19,8 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkS
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { detect } from './detect.mjs';
-import { formatUnread } from './format.mjs';
+import { formatUnread, shownFiles } from './format.mjs';
+import { markRead } from './markread.mjs';
 import { loadState, pruneState, saveState } from './state.mjs';
 import { FAIL_THRESHOLD, formatWarning, loadHealth, recordFailure, recordSuccess } from './health.mjs';
 import {
@@ -33,6 +34,11 @@ import { loadContacts, migrateWhitelist } from './contacts.mjs';
 // 掃一次只要 0.3 毫秒、零 token，所以節流不是為了省成本，是為了不在密集工具呼叫時
 // 對 Drive 掛載連發 readdir。10 秒的上限對「30 分鐘太久」這個需求還有很大餘裕。
 const SCAN_COOLDOWN_MS = 10_000;
+
+// 一次最多具體列幾筆。記帳只記被列出來的，所以這兩個常數必須同時餵給
+// formatUnread 與 shownFiles——不一致就會出現「沒被列出來卻被標成已讀」。
+const SESSION_LIMIT = 8;
+const INLINE_LIMIT = 5;
 
 const argv = process.argv.slice(2);
 const event = (() => {
@@ -297,6 +303,24 @@ async function main() {
     const w = ensureWatcher(sessionId);
     const b = ensureDeskbell();
 
+    // 已讀記帳：把這一輪**具體列出來**的那些記進 read.md。
+    //
+    // 這對應交換區規約的「已掃到」＝機器事實（我的 agent 讀進去了），不是「已告知人」。
+    // 被收成「另有 N 筆較舊的未列出」的那些不記——它們沒出現在任何人眼前。
+    //
+    // 0.5.x 沒有這一步，記帳是 skill 裡一句要 Claude 自己記得做的散文指示。實測的結果是
+    // 它幾乎不發生：2026-09-10 查到一臺機器的已讀帳停在 07-21，之後兩個月的 45 封一筆
+    // 都沒記，雷達因此在每個對話虛報 58 封未讀（真實 6 封）。數字只會漲、永遠不會降。
+    //
+    // 要在 readback 之前做，交換區的彙總檔才會在同一輪就反映出來。
+    const shown = shownFiles(result, { limit: SESSION_LIMIT });
+    let marked = { added: [] };
+    try {
+      marked = markRead(shown.map((u) => u.file), { note: '開場報過' });
+    } catch (err) {
+      trace([`記帳失敗=${String(err?.message ?? err)}`]);
+    }
+
     // 已讀回寫：read.md 變了才鏡射到交換區彙總檔，沒變零成本
     try {
       const { syncReadback } = await import('./readback.mjs');
@@ -305,7 +329,7 @@ async function main() {
       trace([`readback失敗=${String(err?.message ?? err)}`]);
     }
 
-    let context = formatUnread(result, { mode: 'session', limit: 8 });
+    let context = formatUnread(result, { mode: 'session', limit: SESSION_LIMIT });
     const note = watcherNote(before, w);
     if (note) context = context ? context + '\n\n' + note : note;
     // 通訊錄空的 → 提示一次（讀取失敗也當空：提示比靜默安全）
@@ -329,6 +353,7 @@ async function main() {
       `已讀帳=${result.ledgerCount}`,
       `耗時=${result.elapsedMs.toFixed(2)}ms`,
       `注入=${context ? '是' : '否'}`,
+      `記帳=${marked.added.length}`,
       `watcher=${w}`,
       `before=${before}`,
       `deskbell=${b}`,
@@ -393,15 +418,24 @@ async function main() {
     process.exit(0);
   }
 
-  const context = formatUnread(
-    { ...result, unread: fresh, unreadCount: fresh.length },
-    { mode: 'inline', limit: 5 },
-  );
+  const freshResult = { ...result, unread: fresh, unreadCount: fresh.length };
+  const context = formatUnread(freshResult, { mode: 'inline', limit: INLINE_LIMIT });
+
+  // 同 SessionStart：只記真的被列出來的那些。這裡不跑 readback（搭便車要夠輕），
+  // 所以交換區的彙總檔會等到下一次 SessionStart 才跟上，那是可接受的延遲。
+  let marked = { added: [] };
+  try {
+    marked = markRead(shownFiles(freshResult, { limit: INLINE_LIMIT }).map((u) => u.file), { note: '工作中報過' });
+  } catch (err) {
+    trace([`記帳失敗=${String(err?.message ?? err)}`]);
+  }
+
   trace([
     `session=${sessionId}`,
     `tool=${payload.tool_name ?? '-'}`,
     `未讀=${result.unreadCount}`,
     `新落地=${fresh.length}`,
+    `記帳=${marked.added.length}`,
     `耗時=${result.elapsedMs.toFixed(2)}ms`,
     '注入=是',
   ]);

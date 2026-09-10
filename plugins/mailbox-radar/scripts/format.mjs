@@ -18,20 +18,36 @@ function label(item) {
  * @param {'session'|'inline'} opts.mode session＝開場注入；inline＝工作途中搭便車
  * @returns {string|null} 沒有未讀時回 null（呼叫端就不要輸出任何東西）
  */
-export function formatUnread(result, opts = {}) {
-  if (!result?.ok || result.unreadCount === 0) return null;
+/**
+ * 這一輪會被**具體列出來**給人看的是哪幾筆（排序與截斷的唯一真相）。
+ *
+ * 獨立成一個匯出，是因為記帳端需要知道同一個答案。被收成「另有 N 筆較舊的未列出」
+ * 的那些沒有出現在任何人眼前，不能記成已讀。如果兩邊各自算一次，排序規則哪天改了
+ * 就會靜默分岔——沒被看到的訊息被標成已讀，而且不會留下任何跡象。
+ *
+ * @param {object} result detect() 的回傳值
+ * @param {{limit?:number}} opts
+ * @returns {Array} 未讀項目（不是檔名字串），沒有未讀時回空陣列
+ */
+export function shownFiles(result, opts = {}) {
+  if (!result?.ok || result.unreadCount === 0) return [];
   const limit = opts.limit ?? 8;
-  const mode = opts.mode ?? 'session';
-
   const sorted = [...result.unread].sort((a, b) => {
     const pa = PRIORITY.indexOf(a.type);
     const pb = PRIORITY.indexOf(b.type);
     if (pa !== pb) return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb);
     return (b.date ?? '').localeCompare(a.date ?? '');
   });
+  return sorted.slice(0, limit);
+}
 
-  const shown = sorted.slice(0, limit);
-  const rest = sorted.length - shown.length;
+export function formatUnread(result, opts = {}) {
+  if (!result?.ok || result.unreadCount === 0) return null;
+  const limit = opts.limit ?? 8;
+  const mode = opts.mode ?? 'session';
+
+  const shown = shownFiles(result, { limit });
+  const rest = result.unread.length - shown.length;
 
   const inboxN = result.unread.filter((u) => u.channel === 'inbox').length;
   const boardN = result.unread.filter((u) => u.channel === 'board').length;
