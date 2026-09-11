@@ -118,7 +118,9 @@ async function tick() {
   warned = false;
   heartbeat({ lastResult: 'ok', unread: r.unreadCount });
 
-  const fresh = r.unread.filter((u) => !seen.has(u.file));
+  // 用 arrivals 不用 unread：收件匣交給其他系統追蹤時，收件匣的檔不算未讀，
+  // 但新落地一樣要喚醒通知——即時通知正是雷達在那個模式下留給收件匣的唯一工作。
+  const fresh = (r.arrivals ?? r.unread).filter((u) => !seen.has(u.file));
   for (const u of fresh) seen.add(u.file);
   if (first) { first = false; return; }
   if (fresh.length === 0) return;

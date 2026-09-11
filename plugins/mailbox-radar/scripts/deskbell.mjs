@@ -61,16 +61,31 @@ export function notify(title, body, { sound = 'Glass' } = {}) {
   return r.status === 0;
 }
 
-/** 決定這一輪要不要響、響什麼。純函式，測試用。 */
-export function plan(unread, state, now, { repeatMs = REPEAT_MS } = {}) {
+/**
+ * 決定這一輪要不要響、響什麼。純函式，測試用。
+ *
+ * items 是 detect 的 arrivals：每一項帶 tracked。沒帶 tracked 的一律當成追蹤（舊呼叫端相容）。
+ *   追蹤中的（預設全部）：第一次看到響一次，之後仍未讀就每 repeatMs 再響。
+ *   不追蹤的（收件匣交給其他系統時的收件匣）：只在落地時響一次，永不重響——
+ *     那邊處理掉的訊息永遠不會進已讀帳，重響就會為已經有人在管的東西每小時吵一次。
+ *
+ * 第一次跑（state.seeded 還沒設）時，不追蹤的那些只建基準、不響。它們永遠不會進已讀帳，
+ * 沒有基準的話，第一輪會把整個收件匣歷史當成新到的一次倒出來。追蹤中的維持原本行為。
+ */
+export function plan(items, state, now, { repeatMs = REPEAT_MS } = {}) {
   const notified = state.notified ?? {};
-  const stillUnread = new Set(unread.map((u) => u.file));
-  for (const f of Object.keys(notified)) if (!stillUnread.has(f)) delete notified[f]; // 已讀掉的忘記
-  const fresh = unread.filter((u) => !(u.file in notified));
-  const due = unread.filter((u) => u.file in notified && now - notified[u.file] >= repeatMs);
+  const isTracked = (u) => u.tracked !== false;
+  const present = new Set(items.map((u) => u.file));
+  for (const f of Object.keys(notified)) if (!present.has(f)) delete notified[f]; // 已讀掉（或檔案消失）的忘記
+  if (!state.seeded) {
+    for (const u of items) if (!isTracked(u) && !(u.file in notified)) notified[u.file] = now;
+  }
+  const fresh = items.filter((u) => !(u.file in notified));
+  const due = items.filter((u) => isTracked(u) && u.file in notified && now - notified[u.file] >= repeatMs);
   const ring = [...fresh, ...due];
   for (const u of ring) notified[u.file] = now;
-  return { ring, fresh: fresh.length, due: due.length, state: { notified } };
+  const freshUntracked = fresh.filter((u) => !isTracked(u)).length;
+  return { ring, fresh: fresh.length, due: due.length, freshUntracked, state: { notified, seeded: true } };
 }
 
 function describe(items) {
@@ -91,11 +106,13 @@ function tick() {
     heartbeat({ mode: 'scan-fail', error: r.error }); return; // 讀不到交換區：健康帳由 hook 那邊管，桌鈴不吵
   }
   const state = loadState();
-  const p = plan(r.unread, state, Date.now());
+  // 餵 arrivals：不追蹤的收件匣檔不算未讀，但剛落地時一樣要響一次（不重響與建基準由 plan 處理）
+  const p = plan(r.arrivals ?? r.unread, state, Date.now());
   saveState(p.state);
   heartbeat({ mode: 'armed', unread: r.unreadCount });
   if (p.ring.length === 0) return;
-  const title = `交換區信箱：${r.unreadCount} 封未讀${p.fresh ? `（${p.fresh} 封新）` : '（提醒）'}`;
+  // 標題數字＝這一刻需要人注意的：追蹤中的未讀，加上這一輪剛落地、不追蹤的
+  const title = `交換區信箱：${r.unreadCount + p.freshUntracked} 封未讀${p.fresh ? `（${p.fresh} 封新）` : '（提醒）'}`;
   const ok = notify(title, describe(p.ring));
   log(`響鈴 ok=${ok} 新=${p.fresh} 重複=${p.due} 未讀=${r.unreadCount}`);
 }

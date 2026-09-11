@@ -361,10 +361,12 @@ async function main() {
       context = context ? context + '\n\n' + g : g;
     }
 
-    // 開場注入的那批算「已告知」，之後搭便車只報這個 session 進行中新落地的
+    // 開場那一刻看得到的所有檔案都算「已告知」的基準，之後搭便車只報這個 session 進行中新落地的。
+    // 用 arrivals 不用 unread：收件匣交給其他系統追蹤時，收件匣的舊檔不在 unread 裡、開場也沒列，
+    // 但它們也不是「新落地」。不放進基準的話，第一次搭便車就會把整個收件匣歷史當成新的倒出來。
     pruneState(dataDir, now);
     saveState(dataDir, sessionId, {
-      announced: new Set(result.unread.map((u) => u.file)),
+      announced: new Set((result.arrivals ?? result.unread).map((u) => u.file)),
       lastScanAt: now,
     });
 
@@ -428,7 +430,20 @@ async function main() {
   const b = ensureDeskbell();
   if (b !== '已在跑') trace([`deskbell=${b}`]);
 
-  const fresh = result.unread.filter((u) => !state.announced.has(u.file));
+  const pool = result.arrivals ?? result.unread;
+
+  // 沒有基準（這個 session 的狀態檔不存在，例如閒置超過保留天數被清掉）：只建基準、不報。
+  // 跟 watcher 第一輪同一個原則——舊帳歸開場注入，搭便車只管 session 進行中新落地的。
+  // 收件匣交給其他系統追蹤時這條特別重要：收件匣的舊檔永遠不會進已讀帳，沒基準就會整批被當成新落地。
+  if (!state.lastScanAt) {
+    for (const u of pool) state.announced.add(u.file);
+    state.lastScanAt = now;
+    saveState(dataDir, sessionId, state);
+    trace([`session=${sessionId}`, `tool=${payload.tool_name ?? '-'}`, `建基準=${pool.length}`]);
+    process.exit(0);
+  }
+
+  const fresh = pool.filter((u) => !state.announced.has(u.file));
   state.lastScanAt = now;
   for (const u of fresh) state.announced.add(u.file);
   saveState(dataDir, sessionId, state);

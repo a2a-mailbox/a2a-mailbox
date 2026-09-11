@@ -40,7 +40,13 @@ export function readConfig(configPath = defaultConfigPath()) {
   if (!name || !exchange) {
     throw new Error(`config.md 缺欄位（名字=${name ?? '無'}, 交換區=${exchange ?? '無'}）`);
   }
-  return { name, exchange };
+  // 選填：收件匣是不是另有系統在追（例如使用者自己的每日掃描把訊息分流進待辦清單）。
+  // 是的話，雷達對收件匣只做「剛到了」的即時通知、不記舊帳。原因是兩個互不溝通的系統
+  // 各記各的「處理過沒」，雷達那本永遠不會知道另一邊處理掉什麼，開場未讀數就會一路漂高。
+  // 沒寫、或寫別的值＝雷達自己追（通用版預設，行為與改動前相同）。
+  const tracking = pick('收件匣追蹤');
+  const inboxTracking = tracking && /其他|外部|external/i.test(tracking) ? 'external' : 'radar';
+  return { name, exchange, inboxTracking };
 }
 
 /**
@@ -142,8 +148,15 @@ export function detect(opts = {}) {
   const result = {
     ok: false,
     name: null,
+    // 收件匣由誰追蹤：'radar'＝雷達自己記帳（預設）；'external'＝另有系統在追，雷達對收件匣只做即時通知
+    inboxTracking: null,
+    // unread＝要算進未讀數、要在開場列出來的（追蹤中的那些）。unreadCount 永遠等於它的長度。
     unreadCount: 0,
     unread: [],
+    // arrivals＝所有不在已讀帳的檔，每項帶 tracked。給「新落地偵測」用（watcher、搭便車、桌鈴）：
+    // 不追蹤的收件匣檔雖然不算未讀，剛落地時一樣要通知。預設模式下它與 unread 是同一批、同順序。
+    arrivals: [],
+    untrackedCount: 0,
     scanned: {},
     ledgerCount: 0,
     elapsedMs: 0,
@@ -156,10 +169,11 @@ export function detect(opts = {}) {
   let phase = 'config';
   try {
     // 環境變數覆寫只給測試與除錯用（正式路徑是 ~/.claude/team-mailbox/）
-    const { name, exchange } = readConfig(
+    const { name, exchange, inboxTracking } = readConfig(
       opts.configPath || process.env.MAILBOX_RADAR_CONFIG || defaultConfigPath(),
     );
     result.name = name;
+    result.inboxTracking = inboxTracking;
     phase = 'scan';
 
     const ledger = readLedger(
@@ -175,15 +189,18 @@ export function detect(opts = {}) {
     for (const place of places) {
       const { files, missing } = listFiles(join(exchange, place.where));
       result.scanned[place.channel] = { where: place.where, total: files.length, missing };
+      const tracked = !(place.channel === 'inbox' && inboxTracking === 'external');
       for (const file of files) {
         if (ledger.has(file)) continue;
-        result.unread.push({ file, where: place.where, channel: place.channel, ...parseFilename(file) });
+        result.arrivals.push({ file, where: place.where, channel: place.channel, tracked, ...parseFilename(file) });
       }
     }
 
-    // 新的排前面（沒有日期的排最後）
-    result.unread.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    // 新的排前面（沒有日期的排最後）。filter 保留順序，所以 unread 跟著排好。
+    result.arrivals.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    result.unread = result.arrivals.filter((u) => u.tracked);
     result.unreadCount = result.unread.length;
+    result.untrackedCount = result.arrivals.length - result.unread.length;
     result.ok = true;
   } catch (err) {
     result.error = String(err?.message ?? err);

@@ -52,8 +52,13 @@ export function formatUnread(result, opts = {}) {
   const inboxN = result.unread.filter((u) => u.channel === 'inbox').length;
   const boardN = result.unread.filter((u) => u.channel === 'board').length;
 
+  // 收件匣交給其他系統追蹤時，開場若照舊寫「收件匣 0」，會被讀成「收件匣是空的」。
+  // 所以明講收件匣不歸雷達算，免得使用者以為訊息消失了。
+  const sessionHead = result.inboxTracking === 'external'
+    ? `【交換區信箱】${result.name} 的公告板有 ${result.unreadCount} 筆未讀（收件匣交給其他系統追蹤，開場不列）。`
+    : `【交換區信箱】${result.name} 有 ${result.unreadCount} 筆未讀（收件匣 ${inboxN}、公告板 ${boardN}）。`;
   const head = mode === 'session'
-    ? `【交換區信箱】${result.name} 有 ${result.unreadCount} 筆未讀（收件匣 ${inboxN}、公告板 ${boardN}）。`
+    ? sessionHead
     : `【交換區信箱】剛偵測到 ${result.unreadCount} 筆未讀（收件匣 ${inboxN}、公告板 ${boardN}）。`;
 
   const lines = shown.map((u) => `- ${label(u)}｜${u.file}`);
