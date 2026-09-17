@@ -13,7 +13,9 @@
 //   後備：session 還活著但認領 ≥ 15 分鐘沒記帳（卡住不動的殭屍）→ 可接管
 //   同一個 session 重跑 → 視為自己的票（idempotent）
 //
-// 用法： node claim.mjs <訊息檔絕對路徑或檔名>
+// 用法： node claim.mjs <訊息檔絕對路徑或檔名> [--exchange <交換區名稱>]
+//   給絕對路徑最穩：會自己判斷那封屬於哪個交換區。只給檔名時判斷不出來，
+//   額外交換區的訊息要多帶 --exchange，否則兩個交換區的同名檔會搶同一張票。
 // 輸出（單行 JSON）：{ won, reason, holder:{sock,at,ageSec}|null, claimFile }
 //   won=true  → 動手（順位：claim → gate → classify → 動手 → 已讀帳）
 //   won=false → 對使用者說一句「這封已由另一個對話在處理」，然後停手，不跑分類器
@@ -31,6 +33,7 @@ import { mkdirSync, openSync, closeSync, writeSync, readFileSync, readdirSync, s
 import { pathToFileURL } from 'node:url';
 import { resolveDataDir, socketAlive } from './paths.mjs';
 import { exchangeForPath } from './detect.mjs';
+import { listExchanges } from './userdata.mjs';
 
 export const TAKEOVER_MS = 15 * 60 * 1000;
 const SWEEP_MS = 24 * 60 * 60 * 1000;
@@ -98,11 +101,49 @@ export function claim(messageFile, opts = {}) {
   return { won: false, reason: 'held', holder: view, claimFile: file };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const target = process.argv.slice(2).find((a) => !a.startsWith('--'));
-  if (!target) {
-    process.stderr.write('用法：node claim.mjs <訊息檔絕對路徑或檔名>\n');
-    process.exit(2);
+/**
+ * 解析命令列。認得的旗標會吃掉自己的值；不認得的旗標直接報錯。
+ * 0.7.1 以前是「取第一個不是 -- 開頭的參數」，`--exchange 雙機 <檔名>` 會把「雙機」當成訊息檔，
+ * 建出一張沒有意義的票還回報 won:true，看起來像成功。認領是「動手之前的保險」，
+ * 保險悄悄失效比沒有保險更糟，所以參數有任何看不懂的地方都不猜、直接退出。
+ * @returns {{target:string|null, exchangeId:string|undefined, error:string|null}}
+ */
+export function parseClaimArgs(argv) {
+  const VALUE_FLAGS = new Set(['--exchange', '--data']); // --data 由 paths.mjs 的 resolveDataDir 讀，這裡只負責跳過它的值
+  const out = { target: null, exchangeId: undefined, error: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (VALUE_FLAGS.has(a)) {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith('--')) return { ...out, error: `${a} 後面要接一個值` };
+      if (a === '--exchange') out.exchangeId = v;
+      i++;
+    } else if (a.startsWith('--')) {
+      return { ...out, error: `不認得的旗標 ${a}` };
+    } else if (out.target === null) {
+      out.target = a;
+    } else {
+      return { ...out, error: `一次只認領一封，多出來的參數：${a}` };
+    }
   }
-  process.stdout.write(JSON.stringify(claim(target)) + '\n');
+  if (!out.target) out.error = '沒有給訊息檔';
+  return out;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const args = parseClaimArgs(process.argv.slice(2));
+  const die = (msg) => {
+    process.stderr.write(`${msg}\n用法：node claim.mjs <訊息檔絕對路徑或檔名> [--exchange <交換區名稱>]\n`);
+    process.exit(2);
+  };
+  if (args.error) die(args.error);
+  const opts = {};
+  if (args.exchangeId !== undefined) {
+    const known = listExchanges().map((x) => x.id).filter(Boolean);
+    if (!known.includes(args.exchangeId)) die(`沒有叫「${args.exchangeId}」的交換區（這臺掛著的額外交換區：${known.join('、') || '無'}）`);
+    const fromPath = exchangeForPath(args.target)?.id ?? null;
+    if (fromPath && fromPath !== args.exchangeId) die(`路徑屬於交換區「${fromPath}」，跟 --exchange ${args.exchangeId} 對不起來`);
+    opts.exchangeId = args.exchangeId;
+  }
+  process.stdout.write(JSON.stringify(claim(args.target, opts)) + '\n');
 }

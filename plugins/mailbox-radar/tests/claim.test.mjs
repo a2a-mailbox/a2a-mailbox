@@ -64,6 +64,34 @@ eq('併發無解析失敗', wins.filter((w) => typeof w === 'string').length, 0)
 const claimed = results.filter((o) => o.includes('"claimed"')).length;
 eq('恰一個 claimed', claimed, 1);
 
+// 9. 命令列解析：旗標的值不能被當成訊息檔；看不懂的參數一律不猜
+const { parseClaimArgs } = await import(pathToFileURL(script).href);
+let a = parseClaimArgs(['--exchange', '雙機', '訊息_甲.md']);
+eq('旗標在前：目標是檔名不是旗標的值', a.target, '訊息_甲.md'); eq('旗標在前：交換區讀到', a.exchangeId, '雙機'); eq('旗標在前：沒有錯誤', a.error, null);
+a = parseClaimArgs(['訊息_甲.md', '--exchange', '雙機']);
+eq('旗標在後：目標', a.target, '訊息_甲.md'); eq('旗標在後：交換區', a.exchangeId, '雙機');
+a = parseClaimArgs(['--data', '/tmp/x', '訊息_甲.md']);
+eq('--data 的值不會被當成目標', a.target, '訊息_甲.md');
+eq('不認得的旗標 → 報錯', parseClaimArgs(['--exchagne', '雙機', '訊息_甲.md']).error !== null, true);
+eq('旗標沒給值 → 報錯', parseClaimArgs(['訊息_甲.md', '--exchange']).error !== null, true);
+eq('兩個檔名 → 報錯', parseClaimArgs(['訊息_甲.md', '訊息_乙.md']).error !== null, true);
+eq('什麼都沒給 → 報錯', parseClaimArgs([]).error !== null, true);
+// 實際跑命令列：錯的參數要 exit 2、不建票
+const { spawnSync } = await import('node:child_process');
+const { existsSync } = await import('node:fs');
+const cliEnv = { ...process.env, MAILBOX_RADAR_DATA: root, CLAUDE_CODE_MESSAGING_SOCKET: liveA };
+let cli = spawnSync(process.execPath, [script, '--nope', '訊息_旗標錯.md'], { env: cliEnv, encoding: 'utf8' });
+eq('命令列：不認得的旗標 exit 2', cli.status, 2);
+eq('命令列：不認得的旗標不建票', existsSync(join(root, 'claims', '訊息_旗標錯.md.claim')), false);
+cli = spawnSync(process.execPath, [script, '--exchange', '不存在的交換區', '訊息_區名錯.md'], { env: cliEnv, encoding: 'utf8' });
+eq('命令列：交換區名稱不存在 exit 2', cli.status, 2);
+eq('命令列：交換區名稱不存在不建票', existsSync(join(root, 'claims', '不存在的交換區__訊息_區名錯.md.claim')), false);
+// 函式層：指定交換區時票名帶前綴，跟預設交換區的同名檔不搶同一張票
+const k1 = claim('訊息_同名.md', { dataDir: root, sock: liveA, exchangeId: '雙機' });
+const k2 = claim('訊息_同名.md', { dataDir: root, sock: liveB });
+eq('同名檔、不同交換區：兩張票都拿得到', k1.won && k2.won, true);
+eq('同名檔、不同交換區：票名不同', k1.claimFile !== k2.claimFile, true);
+
 console.log(`\n${n - fail}/${n} 通過`);
 rmSync(root, { recursive: true, force: true });
 process.exit(fail ? 1 : 0);
