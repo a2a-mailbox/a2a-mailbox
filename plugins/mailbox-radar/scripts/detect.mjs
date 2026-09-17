@@ -16,10 +16,10 @@
 // 也可以被別的腳本 import：`import { detect } from './detect.mjs'`
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { configPath as defaultConfigPath, ledgerPath as defaultLedgerPath } from './userdata.mjs';
+import { configPath as defaultConfigPath, ledgerPath as defaultLedgerPath, listExchanges } from './userdata.mjs';
 
 const BOARD_DIR = '公告板';
 
@@ -142,73 +142,157 @@ function listFiles(dir) {
   return { files, missing: false };
 }
 
-/** 主流程：回傳未讀清單（只有 metadata）＋掃描帳。 */
-export function detect(opts = {}) {
-  const started = process.hrtime.bigint();
-  const result = {
+/**
+ * 掃一個交換區，回傳這個交換區自己的結果，由 detect() 彙總。
+ *
+ * 每封訊息帶 exchangeId（預設交換區是 null）與 key。key 是跨交換區唯一的識別：
+ * 「已告知」「響過了」這類集合一律用它，因為兩個交換區可能有同名檔，用純檔名會互相蓋掉。
+ * 預設交換區的 key 就是檔名本身，所以只掛一個交換區的機器，既有狀態檔完全不受影響。
+ */
+function scanOne({ id = null, configPath, ledgerPath }) {
+  const r = {
+    id,
     ok: false,
     name: null,
-    // 收件匣由誰追蹤：'radar'＝雷達自己記帳（預設）；'external'＝另有系統在追，雷達對收件匣只做即時通知
+    exchangePath: null,
     inboxTracking: null,
-    // unread＝要算進未讀數、要在開場列出來的（追蹤中的那些）。unreadCount 永遠等於它的長度。
+    configPath,
+    ledgerPath,
     unreadCount: 0,
-    unread: [],
-    // arrivals＝所有不在已讀帳的檔，每項帶 tracked。給「新落地偵測」用（watcher、搭便車、桌鈴）：
-    // 不追蹤的收件匣檔雖然不算未讀，剛落地時一樣要通知。預設模式下它與 unread 是同一批、同順序。
-    arrivals: [],
     untrackedCount: 0,
+    arrivals: [],
     scanned: {},
     ledgerCount: 0,
-    elapsedMs: 0,
     error: null,
-    // 失敗分兩種：'config'＝根本沒裝 team-mailbox（沒有 config.md），該靜默；
-    // 'scan'＝有裝但讀不到交換區（EPERM、掛載掉了…），該讓人看見
     errorKind: null,
   };
-
   let phase = 'config';
   try {
-    // 環境變數覆寫只給測試與除錯用（正式路徑是 ~/.claude/team-mailbox/）
-    const { name, exchange, inboxTracking } = readConfig(
-      opts.configPath || process.env.MAILBOX_RADAR_CONFIG || defaultConfigPath(),
-    );
-    result.name = name;
-    result.inboxTracking = inboxTracking;
+    const { name, exchange, inboxTracking } = readConfig(configPath);
+    r.name = name;
+    r.exchangePath = exchange;
+    r.inboxTracking = inboxTracking;
     phase = 'scan';
 
-    const ledger = readLedger(
-      opts.ledgerPath || process.env.MAILBOX_RADAR_LEDGER || defaultLedgerPath(),
-    );
-    result.ledgerCount = ledger.size;
+    const ledger = readLedger(ledgerPath);
+    r.ledgerCount = ledger.size;
 
     const places = [
       { where: `收件匣-${name}`, channel: 'inbox' },
       { where: BOARD_DIR, channel: 'board' },
     ];
-
     for (const place of places) {
       const { files, missing } = listFiles(join(exchange, place.where));
-      result.scanned[place.channel] = { where: place.where, total: files.length, missing };
+      r.scanned[place.channel] = { where: place.where, total: files.length, missing };
       const tracked = !(place.channel === 'inbox' && inboxTracking === 'external');
       for (const file of files) {
         if (ledger.has(file)) continue;
-        result.arrivals.push({ file, where: place.where, channel: place.channel, tracked, ...parseFilename(file) });
+        r.arrivals.push({
+          file,
+          where: place.where,
+          channel: place.channel,
+          tracked,
+          exchangeId: id,
+          key: id ? `${id}/${file}` : file,
+          ...parseFilename(file),
+        });
       }
     }
+    r.unreadCount = r.arrivals.filter((u) => u.tracked).length;
+    r.untrackedCount = r.arrivals.length - r.unreadCount;
+    r.ok = true;
+  } catch (err) {
+    r.error = String(err?.message ?? err);
+    r.errorKind = phase === 'config' ? 'config' : 'scan';
+  }
+  return r;
+}
 
+/**
+ * 主流程：回傳未讀清單（只有 metadata）＋掃描帳。
+ *
+ * 掛了多個交換區時逐區掃描再彙總。整體的 ok／error／name／scanned 沿用預設交換區的：
+ * 預設交換區沒設定＝還沒裝好；而額外交換區讀不到，不該讓整個雷達停擺。
+ * 各區自己的狀態放在 exchanges 陣列，由呼叫端決定怎麼告知。
+ *
+ * 給了 opts.configPath 或 MAILBOX_RADAR_CONFIG（測試與除錯用）時只掃那一個，行為與 0.6.0 相同。
+ */
+export function detect(opts = {}) {
+  const started = process.hrtime.bigint();
+  const ledgerOverride = opts.ledgerPath || process.env.MAILBOX_RADAR_LEDGER;
+  const configOverride = opts.configPath || process.env.MAILBOX_RADAR_CONFIG;
+  const targets = configOverride
+    ? [{ id: null, configPath: configOverride, ledgerPath: ledgerOverride || defaultLedgerPath() }]
+    : listExchanges().map((x) => (x.id === null && ledgerOverride ? { ...x, ledgerPath: ledgerOverride } : x));
+  const parts = targets.map(scanOne);
+  const root = parts[0];
+
+  const result = {
+    ok: root.ok,
+    name: root.name,
+    // 收件匣由誰追蹤（預設交換區的設定）：'radar'＝雷達自己記帳；'external'＝另有系統在追，雷達對收件匣只做即時通知
+    inboxTracking: root.inboxTracking,
+    // unread＝要算進未讀數、要在開場列出來的（追蹤中的那些），跨所有交換區。unreadCount 永遠等於它的長度。
+    unreadCount: 0,
+    unread: [],
+    // arrivals＝所有不在已讀帳的檔，每項帶 tracked、exchangeId、key。給「新落地偵測」用（watcher、搭便車、桌鈴）：
+    // 不追蹤的收件匣檔雖然不算未讀，剛落地時一樣要通知。只掛一個交換區且沒有外部追蹤時，它與 unread 是同一批。
+    arrivals: [],
+    untrackedCount: 0,
+    scanned: root.scanned,
+    ledgerCount: root.ledgerCount,
+    elapsedMs: 0,
+    error: root.error,
+    // 失敗分兩種：'config'＝根本沒裝 team-mailbox（沒有 config.md），該靜默；
+    // 'scan'＝有裝但讀不到交換區（EPERM、掛載掉了…），該讓人看見
+    errorKind: root.errorKind,
+    // 各交換區自己的狀態（不含訊息清單）。第一個永遠是預設交換區。
+    exchanges: parts.map(({ arrivals, ...rest }) => rest),
+  };
+
+  if (root.ok) {
+    for (const p of parts) if (p.ok) result.arrivals.push(...p.arrivals);
     // 新的排前面（沒有日期的排最後）。filter 保留順序，所以 unread 跟著排好。
     result.arrivals.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
     result.unread = result.arrivals.filter((u) => u.tracked);
     result.unreadCount = result.unread.length;
     result.untrackedCount = result.arrivals.length - result.unread.length;
-    result.ok = true;
-  } catch (err) {
-    result.error = String(err?.message ?? err);
-    result.errorKind = phase === 'config' ? 'config' : 'scan';
   }
 
   result.elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
   return result;
+}
+
+/**
+ * 一個訊息檔屬於哪個交換區。找不到回 null。
+ *
+ * 給閘門與認領鎖用：它們拿到的是訊息檔路徑，要知道該查哪一份通訊錄、票要記在哪個名下。
+ * 比對前兩邊路徑都正規化，Windows 不分大小寫。多個交換區路徑互相包含時取最長的那個；
+ * 「_交換區」與「_交換區-雙機」這種前綴相同的兄弟資料夾不會互吃，因為要求後面緊接路徑分隔符。
+ * @param {string} filePath
+ * @param {Array} [exchanges] 測試用；預設讀 listExchanges() 並解析各自的交換區路徑
+ */
+export function exchangeForPath(filePath, exchanges) {
+  const list = exchanges ?? listExchanges().map((x) => {
+    try { return { ...x, exchangePath: readConfig(x.configPath).exchange }; } catch { return null; }
+  }).filter(Boolean);
+  const norm = (p) => {
+    let s = resolve(String(p)).replace(/[\\/]+$/, '');
+    if (process.platform === 'win32') s = s.toLowerCase();
+    return s;
+  };
+  const target = norm(filePath);
+  let best = null;
+  let bestLen = -1;
+  for (const x of list) {
+    if (!x.exchangePath) continue;
+    const root = norm(x.exchangePath);
+    if ((target === root || target.startsWith(root + sep)) && root.length > bestLen) {
+      best = x;
+      bestLen = root.length;
+    }
+  }
+  return best;
 }
 
 // 直接執行時才印（被 import 時不印）。

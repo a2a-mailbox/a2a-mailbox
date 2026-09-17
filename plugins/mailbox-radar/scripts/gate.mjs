@@ -19,6 +19,7 @@ import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { findContact, loadContacts, readLegacyWhitelist, resolveContactsPath } from './contacts.mjs';
+import { exchangeForPath } from './detect.mjs';
 
 // 名單住本機（放交換區的話，能寫那個資料夾的人就能把自己加進去，等於沒有名單）。
 // 0.6.0 起來源＝使用者資料目錄的 通訊錄.md（見 contacts.mjs 檔頭）；0.5.x 的 config.md
@@ -84,7 +85,7 @@ export function emailForName(name, roster = ROSTER) {
   return findContact(roster, name)?.email ?? null;
 }
 
-export function verdict(path, ownerEmail, roster = ROSTER) {
+export function verdict(path, ownerEmail, roster = ROSTER, { exchangeId = null } = {}) {
   const claimed = claimedSender(path);
   const claimedName = claimed.frontmatter ?? claimed.filename;
   const owner = ownerEmail ? String(ownerEmail).trim().toLowerCase() : null;
@@ -94,7 +95,9 @@ export function verdict(path, ownerEmail, roster = ROSTER) {
 
   const anomalies = [];
   if (roster.length === 0) {
-    anomalies.push('通訊錄是空的（~/.claude/team-mailbox/通訊錄.md 不存在或沒有成員）——請使用者對 Claude 說「同步通訊錄」從 Drive 分享名單帶入，或「通訊錄加人」手動加');
+    anomalies.push(exchangeId
+      ? `交換區「${exchangeId}」的通訊錄是空的——請使用者對 Claude 說「同步通訊錄」並指明這個交換區，或「通訊錄加人」手動加`
+      : '通訊錄是空的（~/.claude/team-mailbox/通訊錄.md 不存在或沒有成員）——請使用者對 Claude 說「同步通訊錄」從 Drive 分享名單帶入，或「通訊錄加人」手動加');
   }
   if (!owner) anomalies.push('拿不到 Drive owner（掛載外的檔或 API 失敗）');
   if (owner && !entry) anomalies.push(`owner ${owner} 不在通訊錄`);
@@ -141,7 +144,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         : '拿不到 itemId（Windows 或掛載異常）：改用 Drive MCP 在該收件匣資料夾內以「檔名完全一致」搜尋反查——恰好命中一筆才取其 owner email 進第二段；命中 0 筆或 2 筆以上（同名檔）一律跑 gate.mjs <檔> --owner "" 走異常判定，不要自行挑一筆',
     }) + '\n');
   } else {
-    process.stdout.write(JSON.stringify(verdict(path, owner || null)) + '\n');
+    // 額外交換區的訊息要查那一區自己的通訊錄（同一個人在不同交換區的成員名單不同）；
+    // 判斷不出屬於哪一區時用預設交換區的。判定結果帶 exchangeId，記帳時才知道要不要帶 --exchange。
+    const x = exchangeForPath(path);
+    const exchangeId = x?.id ?? null;
+    const roster = exchangeId ? loadContacts(x.contactsPath) : ROSTER;
+    process.stdout.write(JSON.stringify({ ...verdict(path, owner || null, roster, { exchangeId }), exchangeId }) + '\n');
   }
   process.exit(0);
 }

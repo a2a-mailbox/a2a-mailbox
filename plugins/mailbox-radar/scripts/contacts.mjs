@@ -33,12 +33,13 @@
 //   node contacts.mjs check <email 或代稱>             → 寄信前查對象
 //   node contacts.mjs sync --facts <json 檔> [--dry-run]
 //   node contacts.mjs migrate                          → config.md 的白名單行 → 通訊錄（冪等）
+//   除了 migrate，都可以加 --exchange <交換區名稱>，操作額外交換區自己的通訊錄（沒帶＝預設交換區）。
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { configPath as defaultConfigPath, contactsPath as defaultContactsPath } from './userdata.mjs';
+import { configPath as defaultConfigPath, contactsPath as defaultContactsPath, exchangePaths } from './userdata.mjs';
 
 export const SOURCES = new Set(['drive', 'manual']);
 export const STATUSES = new Set(['active', 'left']);
@@ -353,42 +354,53 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const cmd = args[0];
   const pretty = args.includes('--pretty');
   const out = (o) => process.stdout.write(JSON.stringify(o, null, pretty ? 2 : 0) + '\n');
-  const positional = args.slice(1).filter((a, i, arr) => !a.startsWith('--') && !(arr[i - 1] ?? '').match(/^--(name|facts)$/));
+  const positional = args.slice(1).filter((a, i, arr) => !a.startsWith('--') && !(arr[i - 1] ?? '').match(/^--(name|facts|exchange)$/));
 
   try {
+    // --exchange <名稱>：操作那個額外交換區自己的通訊錄（同一個人在不同交換區成員名單不同）。沒帶＝預設交換區。
+    const exchangeId = flag(args, '--exchange');
+    let cPath;
+    let cfgPath = process.env.MAILBOX_RADAR_CONFIG || defaultConfigPath();
+    if (exchangeId) {
+      const x = exchangePaths(exchangeId);
+      if (!x) throw new Error(`找不到交換區「${exchangeId}」。額外交換區的設定應該在使用者資料目錄的 交換區/${exchangeId}/config.md。`);
+      cPath = x.contactsPath;
+      cfgPath = x.configPath;
+    }
+
     if (cmd === 'list') {
-      out({ path: resolveContactsPath(), contacts: loadContacts() });
+      out({ path: resolveContactsPath(cPath), contacts: loadContacts(cPath) });
     } else if (cmd === 'add') {
       const [email, alias] = positional;
-      if (!email || !alias) throw new Error('用法: contacts.mjs add <email> <代稱> [--name <姓名>]');
-      const list = loadContacts();
+      if (!email || !alias) throw new Error('用法: contacts.mjs add <email> <代稱> [--name <姓名>] [--exchange <交換區名稱>]');
+      const list = loadContacts(cPath);
       const r = addContact(list, { email, alias, name: flag(args, '--name') ?? '' });
-      const path = saveContacts(r.list);
+      const path = saveContacts(r.list, cPath);
       out({ action: r.action, entry: r.entry, path });
     } else if (cmd === 'remove') {
       const [key] = positional;
-      if (!key) throw new Error('用法: contacts.mjs remove <email 或代稱>');
-      const list = loadContacts();
+      if (!key) throw new Error('用法: contacts.mjs remove <email 或代稱> [--exchange <交換區名稱>]');
+      const list = loadContacts(cPath);
       const r = removeContact(list, key);
       if (!r.entry) { out({ action: 'not-found', key }); process.exit(1); }
-      const path = saveContacts(r.list);
+      const path = saveContacts(r.list, cPath);
       out({ action: 'left', entry: r.entry, path });
     } else if (cmd === 'check') {
       const [key] = positional;
-      if (!key) throw new Error('用法: contacts.mjs check <email 或代稱>');
-      out(checkRecipient(loadContacts(), key));
+      if (!key) throw new Error('用法: contacts.mjs check <email 或代稱> [--exchange <交換區名稱>]');
+      out(checkRecipient(loadContacts(cPath), key));
     } else if (cmd === 'sync') {
       const factsPath = flag(args, '--facts');
-      if (!factsPath) throw new Error('用法: contacts.mjs sync --facts <json 檔> [--dry-run]');
+      if (!factsPath) throw new Error('用法: contacts.mjs sync --facts <json 檔> [--dry-run] [--exchange <交換區名稱>]');
       const facts = JSON.parse(readFileSync(factsPath, 'utf8'));
-      const before = loadContacts();
+      const before = loadContacts(cPath);
       const { list, report } = mergeFromDrive(before, facts);
       const dry = args.includes('--dry-run');
-      const path = dry ? null : saveContacts(list, undefined, { syncedAt: stamp() });
+      const path = dry ? null : saveContacts(list, cPath, { syncedAt: stamp() });
       let selfName = facts.selfName ?? null;
       if (!selfName) {
         try {
-          const m = readFileSync(process.env.MAILBOX_RADAR_CONFIG || defaultConfigPath(), 'utf8').match(/^名字\s*[：:]\s*(.+)$/m);
+          const m = readFileSync(cfgPath, 'utf8').match(/^名字\s*[：:]\s*(.+)$/m);
           selfName = m ? m[1].trim() : null;
         } catch {}
       }

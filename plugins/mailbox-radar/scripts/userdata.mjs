@@ -130,6 +130,56 @@ export function configPath() { return userDataPath('config.md'); }
 export function ledgerPath() { return userDataPath('read.md'); }
 export function contactsPath() { return userDataPath('通訊錄.md'); }
 
+// ── 多交換區 ─────────────────────────────────────────────────────
+//
+// 一臺機器可以同時掛好幾個交換區，例如公司團隊一個、自己兩臺電腦互傳一個。
+// 預設交換區就是使用者資料目錄本身（0.6.0 以前唯一的那個）；每多掛一個，就在
+// 交換區/<交換區名稱>/ 底下放一份格式完全相同的 config.md，已讀帳與通訊錄也各自一份。
+//
+// 為什麼每個交換區各一個資料夾，而不是全塞進同一份 config：
+//   同一個人在不同交換區可以有不同代稱、不同成員名單；已讀帳也不能共用，因為兩個交換區
+//   可能出現同名檔，共用會把這邊的已讀算到那邊。各自一個資料夾，既有讀檔的程式只要換路徑就能沿用。
+
+/** 額外交換區的存放處。 */
+export const EXTRA_EXCHANGES_DIR = join(USER_DATA_DIR, '交換區');
+
+/**
+ * 這臺機器掛了哪些交換區。**純讀取。**第一個永遠是預設交換區（id 為 null）。
+ * 沒有 config.md 的子資料夾不算（可能建到一半）。額外交換區依名稱排序，讓輸出穩定。
+ * @returns {Array<{id: string|null, dir: string, configPath: string, ledgerPath: string, contactsPath: string}>}
+ */
+export function listExchanges() {
+  const out = [{
+    id: null,
+    dir: USER_DATA_DIR,
+    configPath: configPath(),
+    ledgerPath: ledgerPath(),
+    contactsPath: contactsPath(),
+  }];
+  let names = [];
+  try {
+    names = readdirSync(EXTRA_EXCHANGES_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return out; // 沒有 交換區/ 資料夾＝只掛預設那一個
+  }
+  for (const id of names) {
+    const dir = join(EXTRA_EXCHANGES_DIR, id);
+    const cfg = join(dir, 'config.md');
+    if (!existsSync(cfg)) continue;
+    out.push({ id, dir, configPath: cfg, ledgerPath: join(dir, 'read.md'), contactsPath: join(dir, '通訊錄.md') });
+  }
+  return out;
+}
+
+/** 依名稱找交換區的檔案位置。沒給名稱（null、undefined、空字串）＝預設交換區；找不到回 null。 */
+export function exchangePaths(id) {
+  const want = id ?? '';
+  return listExchanges().find((x) => (x.id ?? '') === want) ?? null;
+}
+
 /**
  * 設定是否已備妥。新舊位置任一有 config.md 就算數（搬遷前後都要答對）。
  * 給開場注入判斷要不要提示使用者建設定用。純讀取。

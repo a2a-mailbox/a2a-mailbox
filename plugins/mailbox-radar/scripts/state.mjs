@@ -23,13 +23,20 @@ function file(dataDir, sessionId) {
   return join(dir(dataDir), `${safe}.json`);
 }
 
+// exchanges：這個 session 已經建過基準的交換區（預設交換區記成空字串）。
+// 對話開著時才新掛上去的交換區不在裡面，搭便車會先替它建基準，而不是把它的舊檔整批當新落地。
+// 舊狀態檔沒有這個欄位，回 null，由呼叫端當成「預設交換區建過」。
 export function loadState(dataDir, sessionId) {
   try {
     const raw = readFileSync(file(dataDir, sessionId), 'utf8');
     const s = JSON.parse(raw);
-    return { announced: new Set(s.announced ?? []), lastScanAt: s.lastScanAt ?? 0 };
+    return {
+      announced: new Set(s.announced ?? []),
+      lastScanAt: s.lastScanAt ?? 0,
+      exchanges: Array.isArray(s.exchanges) ? s.exchanges : null,
+    };
   } catch {
-    return { announced: new Set(), lastScanAt: 0 };
+    return { announced: new Set(), lastScanAt: 0, exchanges: null };
   }
 }
 
@@ -38,6 +45,7 @@ export function saveState(dataDir, sessionId, state) {
     writeFileSync(file(dataDir, sessionId), JSON.stringify({
       announced: [...state.announced],
       lastScanAt: state.lastScanAt,
+      exchanges: state.exchanges ?? null,
       updatedAt: new Date().toISOString(),
     }));
   } catch {

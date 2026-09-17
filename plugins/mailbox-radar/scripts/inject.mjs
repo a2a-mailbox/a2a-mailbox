@@ -140,16 +140,22 @@ function contactsGuidance() {
  * 都虛報 58 封未讀，真實數字是 6 封。使用者的說法是「我確實有看過也確實已讀了，
  * 但是它還是報未讀」——問題在記帳不可靠，不在記帳時機。
  */
-function markReadHint() {
+function markReadHint(multi = false) {
   const root = process.env.CLAUDE_PLUGIN_ROOT;
   const script = root ? join(root, 'scripts', 'markread.mjs') : '<plugin>/scripts/markread.mjs';
-  return [
+  const lines = [
     '【記帳】上面這些**還沒**被標記為已讀——你把它們列出來不算，要使用者真的看過或處理過才算。',
     '使用者在這一輪確實處理了其中某幾封之後（讀完了、回覆了、決定不處理了都算），跑：',
     `  node "${script}" --note "<處理結果>" <檔名> [<檔名>...]`,
+  ];
+  if (multi) {
+    lines.push('標了【交換區名稱】的那幾封屬於額外交換區，記帳時要多帶 --exchange <交換區名稱>，不同交換區的分開跑。漏帶會記到預設交換區的帳上，那封就會一直算未讀。');
+  }
+  lines.push(
     '看到回報的 added 有值才算記成功。沒記的話下次開場還會再報一次，那是正確行為。',
     '使用者只是聽你講了一句「有幾封未讀」就繼續做別的事 → 不要記帳。',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 // ── 行程管理共用件 ────────────────────────────────────────────
@@ -341,18 +347,36 @@ async function main() {
     //   1. 使用者看完這批未讀、你在同一輪替他處理掉 → 照下面注入的指示呼叫 markread.mjs
     //   2. 走 team-mailbox skill 的「查信箱」流程 → 該 skill 第 4 步呼叫 markread.mjs
 
-    // 已讀回寫：read.md 變了才鏡射到交換區彙總檔，沒變零成本
+    // 已讀回寫：各交換區的 read.md 變了才鏡射到該區的彙總檔，沒變零成本
     try {
       const { syncReadback } = await import('./readback.mjs');
-      syncReadback({ dataDir });
+      for (const x of result.exchanges ?? [{ id: null, ok: true }]) {
+        if (!x.ok) continue;
+        try {
+          syncReadback({ dataDir, configPath: x.configPath, ledgerPath: x.ledgerPath, exchangeId: x.id });
+        } catch (err) {
+          trace([`readback失敗${x.id ? `（${x.id}）` : ''}=${String(err?.message ?? err)}`]);
+        }
+      }
     } catch (err) {
       trace([`readback失敗=${String(err?.message ?? err)}`]);
     }
 
+    const multi = (result.exchanges ?? []).length > 1;
     let context = formatUnread(result, { mode: 'session', limit: SESSION_LIMIT });
-    if (context) context += '\n\n' + markReadHint();
+    if (context) context += '\n\n' + markReadHint(multi);
     const note = watcherNote(before, w);
     if (note) context = context ? context + '\n\n' + note : note;
+    // 額外交換區讀不到：整體照常運作，但要讓人知道那一區的新訊息現在偵測不到
+    const broken = (result.exchanges ?? []).slice(1).filter((x) => !x.ok);
+    if (broken.length > 0) {
+      const b = [
+        '【交換區信箱】⚠️ 有額外交換區讀不到，那裡的新訊息目前偵測不到。請用一句話告知使用者：',
+        ...broken.map((x) => `- 交換區「${x.id}」：${x.error}`),
+      ].join('\n');
+      context = context ? context + '\n\n' + b : b;
+      trace([`額外交換區讀不到=${broken.map((x) => x.id).join(',')}`]);
+    }
     // 通訊錄空的 → 提示一次（讀取失敗也當空：提示比靜默安全）
     let rosterEmpty = false;
     try { rosterEmpty = loadContacts().filter((c) => c.status === 'active').length === 0; } catch { rosterEmpty = true; }
@@ -364,9 +388,12 @@ async function main() {
     // 開場那一刻看得到的所有檔案都算「已告知」的基準，之後搭便車只報這個 session 進行中新落地的。
     // 用 arrivals 不用 unread：收件匣交給其他系統追蹤時，收件匣的舊檔不在 unread 裡、開場也沒列，
     // 但它們也不是「新落地」。不放進基準的話，第一次搭便車就會把整個收件匣歷史當成新的倒出來。
+    // 用 key 不用檔名：兩個交換區可能有同名檔。exchanges 記下這一刻建過基準的交換區，
+    // 對話開著時才新掛上去的交換區，搭便車會先替它建基準，而不是整批報出來。
     pruneState(dataDir, now);
     saveState(dataDir, sessionId, {
-      announced: new Set((result.arrivals ?? result.unread).map((u) => u.file)),
+      announced: new Set((result.arrivals ?? result.unread).map((u) => u.key ?? u.file)),
+      exchanges: (result.exchanges ?? [{ id: null, ok: true }]).filter((x) => x.ok).map((x) => x.id ?? ''),
       lastScanAt: now,
     });
 
@@ -431,21 +458,35 @@ async function main() {
   if (b !== '已在跑') trace([`deskbell=${b}`]);
 
   const pool = result.arrivals ?? result.unread;
+  const keyOf = (u) => u.key ?? u.file; // 兩個交換區可能有同名檔，一律用 key
+  const okTags = (result.exchanges ?? [{ id: null, ok: true }]).filter((x) => x.ok).map((x) => x.id ?? '');
 
   // 沒有基準（這個 session 的狀態檔不存在，例如閒置超過保留天數被清掉）：只建基準、不報。
   // 跟 watcher 第一輪同一個原則——舊帳歸開場注入，搭便車只管 session 進行中新落地的。
   // 收件匣交給其他系統追蹤時這條特別重要：收件匣的舊檔永遠不會進已讀帳，沒基準就會整批被當成新落地。
   if (!state.lastScanAt) {
-    for (const u of pool) state.announced.add(u.file);
+    for (const u of pool) state.announced.add(keyOf(u));
+    state.exchanges = okTags;
     state.lastScanAt = now;
     saveState(dataDir, sessionId, state);
     trace([`session=${sessionId}`, `tool=${payload.tool_name ?? '-'}`, `建基準=${pool.length}`]);
     process.exit(0);
   }
 
-  const fresh = pool.filter((u) => !state.announced.has(u.file));
+  // 這個 session 第一次看到的交換區（對話開著時才新掛上去的）：同樣先建基準，不把它的舊檔當成新落地。
+  // 舊狀態檔沒有 exchanges 欄位，代表只有預設交換區建過基準。
+  const known = new Set(state.exchanges ?? ['']);
+  const newTags = okTags.filter((t) => !known.has(t));
+  if (newTags.length > 0) {
+    const newSet = new Set(newTags);
+    for (const u of pool) if (newSet.has(u.exchangeId ?? '')) state.announced.add(keyOf(u));
+    state.exchanges = [...known, ...newTags];
+    trace([`session=${sessionId}`, `新掛交換區建基準=${newTags.join(',')}`]);
+  }
+
+  const fresh = pool.filter((u) => !state.announced.has(keyOf(u)));
   state.lastScanAt = now;
-  for (const u of fresh) state.announced.add(u.file);
+  for (const u of fresh) state.announced.add(keyOf(u));
   saveState(dataDir, sessionId, state);
 
   if (fresh.length === 0) {

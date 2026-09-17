@@ -5,10 +5,12 @@
 const PRIORITY = ['訊息', '請求', '回執', '安裝包', '公告', '附件', '其他'];
 
 function label(item) {
+  // 額外交換區的訊息前面標上交換區名稱，使用者才分得出是哪一區的信、記帳時也知道要帶 --exchange
+  const where = item.exchangeId ? `【${item.exchangeId}】` : '';
   const who = item.from ? `${item.from} → ` : '';
   const date = item.date ? `，${item.date}` : '';
   const subject = item.subject ?? item.file;
-  return `${item.type}：${who}${subject}${date}`;
+  return `${where}${item.type}：${who}${subject}${date}`;
 }
 
 /**
@@ -54,9 +56,26 @@ export function formatUnread(result, opts = {}) {
 
   // 收件匣交給其他系統追蹤時，開場若照舊寫「收件匣 0」，會被讀成「收件匣是空的」。
   // 所以明講收件匣不歸雷達算，免得使用者以為訊息消失了。
-  const sessionHead = result.inboxTracking === 'external'
-    ? `【交換區信箱】${result.name} 的公告板有 ${result.unreadCount} 筆未讀（收件匣交給其他系統追蹤，開場不列）。`
-    : `【交換區信箱】${result.name} 有 ${result.unreadCount} 筆未讀（收件匣 ${inboxN}、公告板 ${boardN}）。`;
+  const extras = (result.exchanges ?? []).slice(1).filter((x) => x.ok);
+  let sessionHead;
+  if (extras.length === 0) {
+    sessionHead = result.inboxTracking === 'external'
+      ? `【交換區信箱】${result.name} 的公告板有 ${result.unreadCount} 筆未讀（收件匣交給其他系統追蹤，開場不列）。`
+      : `【交換區信箱】${result.name} 有 ${result.unreadCount} 筆未讀（收件匣 ${inboxN}、公告板 ${boardN}）。`;
+  } else {
+    // 掛了多個交換區：先講總數，再逐區各一句，免得「收件匣 1」分不清是哪一區的
+    const mine = result.unread.filter((u) => !u.exchangeId);
+    const mineInbox = mine.filter((u) => u.channel === 'inbox').length;
+    const mineBoard = mine.filter((u) => u.channel === 'board').length;
+    const rootPart = result.inboxTracking === 'external'
+      ? `${result.name} 的公告板有 ${mine.length} 筆（收件匣交給其他系統追蹤，開場不列）`
+      : `${result.name} 有 ${mine.length} 筆（收件匣 ${mineInbox}、公告板 ${mineBoard}）`;
+    const extraParts = extras.map((x) => {
+      const n = result.unread.filter((u) => u.exchangeId === x.id).length;
+      return `交換區「${x.id}」（代稱 ${x.name}）有 ${n} 筆`;
+    });
+    sessionHead = `【交換區信箱】共 ${result.unreadCount} 筆未讀：${[rootPart, ...extraParts].join('；')}。`;
+  }
   const head = mode === 'session'
     ? sessionHead
     : `【交換區信箱】剛偵測到 ${result.unreadCount} 筆未讀（收件匣 ${inboxN}、公告板 ${boardN}）。`;

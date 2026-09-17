@@ -72,24 +72,37 @@ export function notify(title, body, { sound = 'Glass' } = {}) {
  * 第一次跑（state.seeded 還沒設）時，不追蹤的那些只建基準、不響。它們永遠不會進已讀帳，
  * 沒有基準的話，第一輪會把整個收件匣歷史當成新到的一次倒出來。追蹤中的維持原本行為。
  */
-export function plan(items, state, now, { repeatMs = REPEAT_MS } = {}) {
+export function plan(items, state, now, { repeatMs = REPEAT_MS, tags } = {}) {
   const notified = state.notified ?? {};
   const isTracked = (u) => u.tracked !== false;
-  const present = new Set(items.map((u) => u.file));
+  // 用 key 不用檔名：兩個交換區可能有同名檔，用檔名會互相蓋掉「響過了沒」
+  const keyOf = (u) => u.key ?? u.file;
+  const tagOf = (u) => u.exchangeId ?? '';
+  const present = new Set(items.map(keyOf));
   for (const f of Object.keys(notified)) if (!present.has(f)) delete notified[f]; // 已讀掉（或檔案消失）的忘記
-  if (!state.seeded) {
-    for (const u of items) if (!isTracked(u) && !(u.file in notified)) notified[u.file] = now;
+  // 建過基準的交換區，以交換區為單位記。舊狀態檔只有 seeded 布林，代表預設交換區建過。
+  // 還沒建過基準的交換區（第一次跑、或新掛上去的），不追蹤的舊檔只建基準不響。
+  const seededTags = new Set(state.seededExchanges ?? (state.seeded ? [''] : []));
+  for (const u of items) {
+    if (!seededTags.has(tagOf(u)) && !isTracked(u) && !(keyOf(u) in notified)) notified[keyOf(u)] = now;
   }
-  const fresh = items.filter((u) => !(u.file in notified));
-  const due = items.filter((u) => isTracked(u) && u.file in notified && now - notified[u.file] >= repeatMs);
+  const fresh = items.filter((u) => !(keyOf(u) in notified));
+  const due = items.filter((u) => isTracked(u) && keyOf(u) in notified && now - notified[keyOf(u)] >= repeatMs);
   const ring = [...fresh, ...due];
-  for (const u of ring) notified[u.file] = now;
+  for (const u of ring) notified[keyOf(u)] = now;
   const freshUntracked = fresh.filter((u) => !isTracked(u)).length;
-  return { ring, fresh: fresh.length, due: due.length, freshUntracked, state: { notified, seeded: true } };
+  // 這一輪掃到的交換區都算建過基準。呼叫端沒給 tags 時從訊息推；連一封都沒有時預設交換區也算建過，
+  // 否則它之後第一封不追蹤的新訊息會被當成舊帳吞掉。
+  for (const t of tags ?? items.map(tagOf)) seededTags.add(t);
+  if (!tags && items.length === 0) seededTags.add('');
+  return {
+    ring, fresh: fresh.length, due: due.length, freshUntracked,
+    state: { notified, seeded: true, seededExchanges: [...seededTags] },
+  };
 }
 
 function describe(items) {
-  const lines = items.slice(0, 2).map((u) => `${u.type}：${u.from ? u.from + ' → ' : ''}${u.subject ?? u.file}`);
+  const lines = items.slice(0, 2).map((u) => `${u.exchangeId ? `【${u.exchangeId}】` : ''}${u.type}：${u.from ? u.from + ' → ' : ''}${u.subject ?? u.file}`);
   if (items.length > 2) lines.push(`…另 ${items.length - 2} 筆`);
   return lines.join('｜');
 }
@@ -106,8 +119,10 @@ function tick() {
     heartbeat({ mode: 'scan-fail', error: r.error }); return; // 讀不到交換區：健康帳由 hook 那邊管，桌鈴不吵
   }
   const state = loadState();
-  // 餵 arrivals：不追蹤的收件匣檔不算未讀，但剛落地時一樣要響一次（不重響與建基準由 plan 處理）
-  const p = plan(r.arrivals ?? r.unread, state, Date.now());
+  // 餵 arrivals：不追蹤的收件匣檔不算未讀，但剛落地時一樣要響一次（不重響與建基準由 plan 處理）。
+  // tags＝這一輪成功掃到的交換區，讓「一封都沒有的交換區」也記成建過基準。
+  const tags = r.exchanges ? r.exchanges.filter((x) => x.ok).map((x) => x.id ?? '') : undefined;
+  const p = plan(r.arrivals ?? r.unread, state, Date.now(), { tags });
   saveState(p.state);
   heartbeat({ mode: 'armed', unread: r.unreadCount });
   if (p.ring.length === 0) return;

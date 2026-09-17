@@ -32,7 +32,11 @@ export function syncReadback(opts = {}) {
   const hash = createHash('sha256').update(raw).digest('hex');
 
   let state = { hash: null, scannedAt: {} };
-  const statePath = join(dataDir, STATE);
+  // 每個交換區各一份狀態：各自的帳、各自的「上次鏡射時的雜湊」。預設交換區沿用原本的檔名。
+  const stateName = opts.exchangeId
+    ? `readback-state-${String(opts.exchangeId).replace(/[\\/:*?"<>|]/g, '_')}.json`
+    : STATE;
+  const statePath = join(dataDir, stateName);
   try { state = { ...state, ...JSON.parse(readFileSync(statePath, 'utf8')) }; } catch {}
 
   if (state.hash === hash) return { wrote: false, why: 'read.md 未變' };

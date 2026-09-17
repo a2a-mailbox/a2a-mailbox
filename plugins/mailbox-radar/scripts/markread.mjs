@@ -17,9 +17,11 @@
 //   2. team-mailbox skill 的「查信箱」與 mailbox-triage 的收尾：處理完一批訊息後帶著檔名呼叫。
 //
 // 用法：
-//   node markread.mjs [--note "<註記>"] <檔名> [<檔名>...]
-//   node markread.mjs [--note "<註記>"] --stdin      （一行一個檔名）
-//   node markread.mjs --list                          （印出目前記了哪些）
+//   node markread.mjs [--note "<註記>"] [--exchange <交換區名稱>] <檔名> [<檔名>...]
+//   node markread.mjs [--note "<註記>"] [--exchange <交換區名稱>] --stdin   （一行一個檔名）
+//   node markread.mjs [--exchange <交換區名稱>] --list                       （印出目前記了哪些）
+//
+// --exchange：記到額外交換區自己的帳上（見 userdata.mjs 的多交換區說明）。沒帶＝預設交換區。
 //
 // 冪等：已經在帳上的檔名不會重複追加，回報裡列在 skipped。
 
@@ -27,7 +29,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { ledgerPath as defaultLedgerPath } from './userdata.mjs';
+import { exchangePaths, ledgerPath as defaultLedgerPath } from './userdata.mjs';
 
 const HEADER = '# team-mailbox 已讀帳（本機）\n';
 
@@ -114,24 +116,38 @@ function readStdin() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const ni = args.indexOf('--note');
+  const ei = args.indexOf('--exchange');
   const note = ni >= 0 ? args[ni + 1] : undefined;
-  // 沒有 --note 時 ni 是 -1。不先擋掉的話，`i !== ni + 1` 會變成 `i !== 0`，
-  // 把第一個檔名當成 note 的值濾掉：單檔會印用法退出，多檔會靜默漏記第一個——
-  // 症狀跟這支要修的「記帳不可靠」一模一樣。
-  const rest = args.filter((a, i) => !a.startsWith('--') && (ni < 0 || i !== ni + 1));
+  const exchangeId = ei >= 0 ? args[ei + 1] : undefined;
+  // 帶值旗標的「值」那一格不能當檔名。只收實際出現的旗標位置：曾經只看 --note，
+  // 沒有 --note 時 ni 是 -1，`i !== ni + 1` 變成 `i !== 0`，把第一個檔名當成 note 的值濾掉——
+  // 單檔會印用法退出，多檔會靜默漏記第一個，症狀跟這支要修的「記帳不可靠」一模一樣。
+  const valueAt = new Set([ni, ei].filter((i) => i >= 0).map((i) => i + 1));
+  const rest = args.filter((a, i) => !a.startsWith('--') && !valueAt.has(i));
+
+  // --exchange <名稱>：記到那個額外交換區自己的帳上。漏帶會記到預設交換區，那封就會一直算未讀。
+  let ledgerPath;
+  if (exchangeId) {
+    const x = exchangePaths(exchangeId);
+    if (!x) {
+      console.error(`找不到交換區「${exchangeId}」。額外交換區的設定應該在使用者資料目錄的 交換區/${exchangeId}/config.md。`);
+      process.exit(1);
+    }
+    ledgerPath = x.ledgerPath;
+  }
 
   const run = (files) => {
     if (files.length === 0) {
-      console.error('用法: markread.mjs [--note "<註記>"] <檔名>... ｜ --stdin ｜ --list');
+      console.error('用法: markread.mjs [--note "<註記>"] [--exchange <交換區名稱>] <檔名>... ｜ --stdin ｜ --list');
       process.exit(2);
     }
-    const r = markRead(files, { note });
+    const r = markRead(files, { note, ledgerPath });
     process.stdout.write(JSON.stringify(r) + '\n');
     process.exit(0);
   };
 
   if (args.includes('--list')) {
-    const path = resolveLedgerPath();
+    const path = resolveLedgerPath(ledgerPath);
     let raw = '';
     try { raw = readFileSync(path, 'utf8'); } catch {}
     process.stdout.write(JSON.stringify({ path, entries: [...ledgerEntries(raw)] }) + '\n');

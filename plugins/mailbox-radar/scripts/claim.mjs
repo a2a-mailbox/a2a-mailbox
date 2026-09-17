@@ -30,6 +30,7 @@ import { basename, join } from 'node:path';
 import { mkdirSync, openSync, closeSync, writeSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolveDataDir, socketAlive } from './paths.mjs';
+import { exchangeForPath } from './detect.mjs';
 
 export const TAKEOVER_MS = 15 * 60 * 1000;
 const SWEEP_MS = 24 * 60 * 60 * 1000;
@@ -58,7 +59,11 @@ export function claim(messageFile, opts = {}) {
   const dir = claimsDir(dataDir);
   mkdirSync(dir, { recursive: true });
   sweep(dir);
-  const file = join(dir, `${basename(messageFile)}.claim`);
+  // 票名要跨交換區唯一：兩個交換區可能有同名檔，用純檔名會讓兩封不相干的訊息搶同一張票。
+  // 預設交換區（以及判斷不出屬於哪一區的，例如只給了檔名）維持純檔名，舊票照樣有效。
+  const exchangeId = opts.exchangeId !== undefined ? opts.exchangeId : (exchangeForPath(messageFile)?.id ?? null);
+  const prefix = exchangeId ? `${String(exchangeId).replace(/[\\/:*?"<>|]/g, '_')}__` : '';
+  const file = join(dir, `${prefix}${basename(messageFile)}.claim`);
   const ticket = JSON.stringify({ sock: me, at: new Date(now).toISOString() });
 
   // 1. 原子搶票
