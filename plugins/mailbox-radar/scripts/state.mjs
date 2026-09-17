@@ -66,3 +66,26 @@ export function pruneState(dataDir, nowMs = Date.now()) {
     }
   } catch {}
 }
+
+/**
+ * watcher 每一輪的「新落地」判定。會把看過的 key 加進 seen，回傳這一輪該通知的項目。
+ *
+ * 三種情況只建基準、不通知：
+ *   - 第一輪（first）：舊帳歸開場注入。
+ *   - 已經看過的 key。
+ *   - 這一輪才第一次出現的交換區裡「不追蹤」的檔（tracked === false）：收件匣交給其他系統追蹤時，
+ *     那些檔永遠不進已讀帳，不建基準會整批倒出來。
+ * 這一輪才第一次出現的交換區裡、雷達自己追的檔要通知：它會出現在 arrivals 就代表不在已讀帳，
+ * 是還沒處理的信，不是歷史；而這個對話的開場注入沒涵蓋過這一區，這裡不報就沒人報。
+ */
+export function pickFresh(items, { seen, baselined, first }) {
+  const fresh = [];
+  for (const u of items) {
+    const k = u.key ?? u.file;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (first) continue;
+    if (baselined.has(u.exchangeId ?? '') || u.tracked !== false) fresh.push(u);
+  }
+  return fresh;
+}

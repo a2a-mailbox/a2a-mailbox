@@ -13,7 +13,7 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 // 機器層「通知器停」門檻：寬到筆電睡一下不誤報，窄到不讓人整個上午裸奔
 export const STALE_MS = 10 * 60 * 1000;
@@ -78,6 +78,21 @@ export function sessionWatcherStatus(dataDir, sessionId) {
   } catch {
     return 'never';
   }
+}
+
+/**
+ * 心跳是不是「別的版本的程式」寫的。常駐行程（watcher、桌鈴）不會跟著 plugin 更新重啟，
+ * 更新後會一直跑舊版的程式：實測過舊版 watcher 不認得新掛的交換區，那條即時通知等於死掉，
+ * 而且沒有任何錯誤。所以心跳記下自己的程式路徑（路徑裡帶版號），hook 每次順手比對，不同就換掉。
+ * 心跳沒有 script 欄位＝還不會記路徑的舊版寫的，同樣算別的版本。
+ * 心跳檔不存在或讀不到 → 回 false：無從判斷，交給原本的存活檢查。
+ */
+export function heartbeatFromOtherVersion(hbFile, scriptPath) {
+  let h;
+  try { h = JSON.parse(readFileSync(hbFile, 'utf8')); } catch { return false; }
+  if (!h.script) return true;
+  const norm = (x) => { const r = resolve(String(x)); return process.platform === 'win32' ? r.toLowerCase() : r; };
+  return norm(h.script) !== norm(scriptPath);
 }
 
 // ── session 名冊：cross-session messaging 的通道 ────────────────────────────

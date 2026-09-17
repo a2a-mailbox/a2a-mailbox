@@ -20,7 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { detect } from './detect.mjs';
 import { liveSockets, resolveDataDir } from './paths.mjs';
 import { configPath as defaultConfigPath } from './userdata.mjs';
@@ -30,12 +30,13 @@ export const REPEAT_MS = 60 * 60 * 1000;
 const dataDir = resolveDataDir();
 const STATE = join(dataDir, 'deskbell-state.json');
 const HB = join(dataDir, 'deskbell.heartbeat.json');
+const SELF = fileURLToPath(import.meta.url); // 寫進心跳，hook 用它發現「這支還在跑舊版的程式」
 
 function log(line) {
   try { mkdirSync(dataDir, { recursive: true }); appendFileSync(join(dataDir, 'deskbell.log'), `${new Date().toISOString()}  ${line}\n`); } catch {}
 }
 function heartbeat(extra = {}) {
-  try { mkdirSync(dataDir, { recursive: true }); writeFileSync(HB, JSON.stringify({ at: new Date().toISOString(), pid: process.pid, pollMs: POLL_MS, ...extra })); } catch {}
+  try { mkdirSync(dataDir, { recursive: true }); writeFileSync(HB, JSON.stringify({ at: new Date().toISOString(), pid: process.pid, pollMs: POLL_MS, script: SELF, ...extra })); } catch {}
 }
 process.on('SIGTERM', () => { log('收到 SIGTERM，桌鈴退出'); process.exit(0); });
 

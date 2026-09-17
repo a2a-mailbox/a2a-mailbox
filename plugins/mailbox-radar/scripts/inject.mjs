@@ -22,10 +22,7 @@ import { detect } from './detect.mjs';
 import { formatUnread } from './format.mjs';
 import { loadState, pruneState, saveState } from './state.mjs';
 import { FAIL_THRESHOLD, formatWarning, loadHealth, recordFailure, recordSuccess } from './health.mjs';
-import {
-  readHeartbeats, resolveDataDir, sessionKey, sessionWatcherStatus, watcherStatus, watchersDir,
-  SESSION_STALE_MS,
-} from './paths.mjs';
+import { SESSION_STALE_MS, heartbeatFromOtherVersion, heartbeatPath, readHeartbeats, resolveDataDir, sessionKey, sessionWatcherStatus, watcherStatus, watchersDir } from './paths.mjs';
 import { configPath, contactsPath, ensureUserData } from './userdata.mjs';
 import { loadContacts, migrateWhitelist } from './contacts.mjs';
 
@@ -186,7 +183,7 @@ function spawnDetached(script, args) {
 // 每個 session 一支，detached；用 pid 檔防同一 session 重複 spawn
 // （SessionStart 在 resume／compact 後可能再度觸發）。
 // 回傳值是狀態字串，SessionStart 的警告三態靠它說話——改字串要跟 watcherNote 同步：
-//   '無socket' | '已在跑' | 'spawn pid=N' | '復活 pid=N' | 'spawn失敗=…'
+//   '無socket' | '已在跑' | 'spawn pid=N' | '復活 pid=N' | '換版 pid=N' | 'spawn失敗=…'
 function ensureWatcher(sessionId) {
   if (!process.env.CLAUDE_CODE_MESSAGING_SOCKET || !process.env.CLAUDE_CODE_MESSAGING_TOKEN) {
     return '無socket'; // headless 等宿主沒有喚醒路，環境層照常
@@ -208,8 +205,19 @@ function ensureWatcher(sessionId) {
           if (age <= SESSION_STALE_MS) return '已在跑';
           stale = true;
         }
-        if (!stale) return '已在跑';
-        try { process.kill(oldPid, 'SIGTERM'); } catch {} // 卡死屍體，殺掉重生
+        // 活著而且心跳新鮮，但心跳是別的版本的程式寫的：plugin 更新過了，這支還在跑舊版。
+        // 舊版可能不認得新功能（實測：不認得新掛的交換區，即時通知整條死掉而且不報錯），換掉。
+        const otherVersion = mine === 'alive' && heartbeatFromOtherVersion(heartbeatPath(dataDir, sessionId), join(HERE, 'watcher.mjs'));
+        if (!stale && !otherVersion) return '已在跑';
+        try { process.kill(oldPid, 'SIGTERM'); } catch {} // 卡死屍體或舊版，殺掉重生
+        if (otherVersion) {
+          // 舊心跳先刪：Windows 上的 kill 不給舊行程收尾的機會，心跳檔會留著，
+          // 新行程寫出第一筆心跳之前，下一次檢查會再把它當成舊版又殺一次。
+          try { unlinkSync(heartbeatPath(dataDir, sessionId)); } catch {}
+          const pid = spawnDetached('watcher.mjs', ['--data', dataDir, '--session', String(sessionId)]);
+          writeFileSync(pidFile, String(pid));
+          return `換版 pid=${pid}`;
+        }
       }
     } catch {} // 沒 pid 檔或行程已死 → 往下 spawn
     const pid = spawnDetached('watcher.mjs', ['--data', dataDir, '--session', String(sessionId)]);
@@ -239,8 +247,11 @@ function ensureDeskbell() {
       const oldPid = Number(readFileSync(pidFile, 'utf8').trim());
       if (oldPid > 0 && pidAlive(oldPid)) {
         const age = Date.now() - statSync(pidFile).mtimeMs;
-        if (fresh || age <= SESSION_STALE_MS) return '已在跑';
+        // 同 watcher：心跳新鮮但是別的版本寫的＝plugin 更新後還在跑舊版，換掉
+        const otherVersion = fresh && heartbeatFromOtherVersion(join(dataDir, 'deskbell.heartbeat.json'), join(HERE, 'deskbell.mjs'));
+        if ((fresh || age <= SESSION_STALE_MS) && !otherVersion) return '已在跑';
         try { process.kill(oldPid, 'SIGTERM'); } catch {}
+        if (otherVersion) { try { unlinkSync(join(dataDir, 'deskbell.heartbeat.json')); } catch {} }
       }
     } catch {}
     const pid = spawnDetached('deskbell.mjs', ['--data', dataDir]);
@@ -451,7 +462,8 @@ async function main() {
   // watcher 自我復活（改看本 session 自己的心跳）：原本只有 SessionStart 會 spawn，
   // 長壽 session 的 watcher 死了就永遠沒人管。這裡在每次（節流後的）搭便車掃描順手檢查，
   // 不健康就帶起來——「每個開著的對話都有一支活的 watcher」從此成立，且不被別的對話遮蔽。
-  if (sessionWatcherStatus(dataDir, sessionId) !== 'alive') {
+  if (sessionWatcherStatus(dataDir, sessionId) !== 'alive'
+    || heartbeatFromOtherVersion(heartbeatPath(dataDir, sessionId), join(HERE, 'watcher.mjs'))) {
     trace([`watcher復活檢查=${ensureWatcher(sessionId)}`]);
   }
   const b = ensureDeskbell();
@@ -473,13 +485,17 @@ async function main() {
     process.exit(0);
   }
 
-  // 這個 session 第一次看到的交換區（對話開著時才新掛上去的）：同樣先建基準，不把它的舊檔當成新落地。
+  // 這個 session 第一次看到的交換區（對話開著時才新掛上去的，或開場時雷達還是不認得多交換區的舊版）。
+  // 只替「不追蹤」的檔建基準：收件匣交給其他系統追蹤時，那些檔永遠不進已讀帳，不建基準會整批倒出來。
+  // 雷達自己追的檔會出現在 pool 裡，就代表它不在已讀帳＝還沒處理的信，不是歷史（歷史早就在已讀帳裡、
+  // 根本進不了 pool）。這個 session 的開場注入沒涵蓋過這一區，這裡不報就永遠沒人報。
+  // 0.7.0 把它們一起放進基準，新掛的交換區裡等著的信就被整批吞掉、從來沒通知過任何人。
   // 舊狀態檔沒有 exchanges 欄位，代表只有預設交換區建過基準。
   const known = new Set(state.exchanges ?? ['']);
   const newTags = okTags.filter((t) => !known.has(t));
   if (newTags.length > 0) {
     const newSet = new Set(newTags);
-    for (const u of pool) if (newSet.has(u.exchangeId ?? '')) state.announced.add(keyOf(u));
+    for (const u of pool) if (newSet.has(u.exchangeId ?? '') && u.tracked === false) state.announced.add(keyOf(u));
     state.exchanges = [...known, ...newTags];
     trace([`session=${sessionId}`, `新掛交換區建基準=${newTags.join(',')}`]);
   }

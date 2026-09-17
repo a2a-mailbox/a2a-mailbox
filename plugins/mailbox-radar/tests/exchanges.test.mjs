@@ -253,25 +253,56 @@ const backdate = () => { // 跳過 10 秒節流
   ok('注入：雙機的已讀彙總檔寫在雙機的收件匣', existsSync(join(duoEx, '收件匣-Windows', '已讀-Windows.md')));
   ok('注入：團隊的已讀彙總檔寫在團隊的收件匣', existsSync(join(teamEx, '收件匣-Alice', '已讀-Alice.md')));
 
-  // 對話開著時才加掛的交換區：第一次搭便車只建基準
+  // 對話開著時才加掛的交換區。裡面三種檔：
+  //   已經在那一區已讀帳裡的＝歷史，不報
+  //   收件匣交給其他系統追蹤、不追蹤的舊檔＝只建基準，不報
+  //   雷達自己追、不在已讀帳的＝還沒處理的信，第一次搭便車就要報（0.7.0 把它一起吞掉了）
   const lateEx = join(root, 'drive', '_交換區-後掛');
   mkdirSync(join(lateEx, '收件匣-Late'), { recursive: true });
   mkdirSync(join(lateEx, '公告板'), { recursive: true });
-  writeFileSync(join(lateEx, '公告板', '公告_後掛舊檔_2026-09-05.md'), 'x');
+  writeFileSync(join(lateEx, '公告板', '公告_後掛歷史_2026-09-04.md'), 'x');
+  writeFileSync(join(lateEx, '公告板', '公告_後掛未讀_2026-09-05.md'), 'x');
+  writeFileSync(join(lateEx, '收件匣-Late', '訊息_甲→Late_別的系統在追_2026-09-05.md'), 'x');
   const lateDir = join(userDir, '交換區', '後掛');
   mkdirSync(lateDir, { recursive: true });
-  writeFileSync(join(lateDir, 'config.md'), `名字：Late\n交換區：${lateEx}\n`);
+  writeFileSync(join(lateDir, 'config.md'), `名字：Late\n交換區：${lateEx}\n收件匣追蹤：其他系統\n`);
+  writeFileSync(join(lateDir, 'read.md'), '- 公告_後掛歷史_2026-09-04.md（已讀）\n');
 
   backdate();
-  ok('後掛：第一次搭便車不把後掛交換區的舊檔當成新落地', inject('PostToolUse', 'ex-test') === null);
+  const first = inject('PostToolUse', 'ex-test') ?? '';
+  ok('後掛：第一次搭便車就報還沒處理的信', first.includes('公告_後掛未讀_2026-09-05.md'), first);
+  ok('後掛：列出時標了交換區', /【後掛】/.test(first), first);
+  ok('後掛：已讀帳裡的歷史不報', !first.includes('公告_後掛歷史_2026-09-04.md'), first);
+  ok('後掛：別的系統在追的收件匣舊檔不報', !first.includes('別的系統在追'), first);
   ok('後掛：狀態記上後掛交換區', JSON.parse(readFileSync(sessionFile, 'utf8')).exchanges.includes('後掛'));
 
+  backdate();
+  ok('後掛：報過的不重複報', inject('PostToolUse', 'ex-test') === null);
+
   writeFileSync(join(lateEx, '公告板', '公告_後掛新到_2026-09-06.md'), 'x');
+  writeFileSync(join(lateEx, '收件匣-Late', '訊息_乙→Late_剛落地_2026-09-06.md'), 'x');
   backdate();
   const c = inject('PostToolUse', 'ex-test') ?? '';
-  ok('後掛：之後新到的照樣報', c.includes('公告_後掛新到_2026-09-06.md'), c);
-  ok('後掛：列出時標了交換區', /【後掛】/.test(c), c);
-  ok('後掛：舊檔沒有一起報', !c.includes('公告_後掛舊檔_2026-09-05.md'));
+  ok('後掛：之後公告板新到的照樣報', c.includes('公告_後掛新到_2026-09-06.md'), c);
+  ok('後掛：之後收件匣剛落地的也報（即時通知）', c.includes('剛落地'), c);
+  ok('後掛：先前建過基準的收件匣舊檔沒有一起報', !c.includes('別的系統在追'), c);
+
+  // watcher 用的新落地判定（純函式）
+  {
+    const { pickFresh } = await import(pathToFileURL(join(SCRIPTS, 'state.mjs')).href);
+    const mk = (key, exchangeId, tracked = true) => ({ key, file: key, exchangeId, tracked });
+    const seen = new Set();
+    const baselined = new Set();
+    const round1 = pickFresh([mk('a.md', null), mk('雙機/b.md', '雙機')], { seen, baselined, first: true });
+    ok('watcher：第一輪只建基準', round1.length === 0 && seen.size === 2);
+    baselined.add('');
+    const round2 = pickFresh([mk('a.md', null), mk('新/未讀.md', '新'), mk('新/外部追.md', '新', false)], { seen, baselined, first: false });
+    ok('watcher：新掛交換區裡雷達自己追的信要通知', round2.map((u) => u.key).join() === '新/未讀.md', JSON.stringify(round2));
+    ok('watcher：新掛交換區裡不追蹤的舊檔只建基準', seen.has('新/外部追.md'));
+    baselined.add('新');
+    const round3 = pickFresh([mk('新/未讀.md', '新'), mk('新/外部追.md', '新', false), mk('新/外部追2.md', '新', false)], { seen, baselined, first: false });
+    ok('watcher：建過基準的交換區，不追蹤的新檔照樣通知', round3.map((u) => u.key).join() === '新/外部追2.md', JSON.stringify(round3));
+  }
 
   // 額外交換區讀不到時，開場要講
   const badDir = join(userDir, '交換區', '讀不到');

@@ -45,6 +45,19 @@ eq('socketAlive null → null', P.socketAlive(null), null);
 eq('readHeartbeats 數量', P.readHeartbeats(root).length, 2);
 eq('socketLabel 取尾段（Unix 形）', P.socketLabel('/tmp/cc-socks/123.sock'), '123.sock');
 eq('socketLabel 取尾段（Windows 形）', P.socketLabel('\\\\.\\pipe\\LOCAL\\cc-msg-abc'), 'cc-msg-abc');
+
+// 心跳是不是別的版本的程式寫的（plugin 更新後，常駐行程還在跑舊版）
+const cur = join(root, 'cache', '0.7.1', 'scripts', 'watcher.mjs');
+hb('v-same', 1_000, { script: cur });
+hb('v-old', 1_000, { script: join(root, 'cache', '0.7.0', 'scripts', 'watcher.mjs') });
+hb('v-none', 1_000);
+eq('換版：同一支程式 → 不算別的版本', P.heartbeatFromOtherVersion(P.heartbeatPath(root, 'v-same'), cur), false);
+eq('換版：路徑裡的版號不同 → 別的版本', P.heartbeatFromOtherVersion(P.heartbeatPath(root, 'v-old'), cur), true);
+eq('換版：心跳沒記程式路徑（還不會記的舊版）→ 別的版本', P.heartbeatFromOtherVersion(P.heartbeatPath(root, 'v-none'), cur), true);
+eq('換版：沒有心跳檔 → 不判斷', P.heartbeatFromOtherVersion(P.heartbeatPath(root, 'v-missing'), cur), false);
+if (process.platform === 'win32') {
+  eq('換版：Windows 路徑不分大小寫與斜線方向', P.heartbeatFromOtherVersion(P.heartbeatPath(root, 'v-same'), cur.toUpperCase().replace(/\\/g, '/')), false);
+} else skip('換版：Windows 路徑不分大小寫與斜線方向', '非 Windows');
 console.log(`\n${n - fail}/${n} 通過`);
 rmSync(root, { recursive: true, force: true });
 process.exit(fail ? 1 : 0);
