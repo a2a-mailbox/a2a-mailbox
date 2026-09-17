@@ -82,11 +82,11 @@
 
 ### Step 3：確認裝好了
 
-重開新對話後，請 Claude 跑一次偵測器：
+重開新對話後，把這句話貼給 Claude：
 
-```
-node ~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/*/scripts/detect.mjs --pretty
-```
+> 請列出 `~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/` 底下的版本資料夾，用版號最大的那個，跑裡面的 `scripts/detect.mjs --pretty`，把結果給我看。
+
+（不直接給一行指令的原因：更新過之後，舊版本的資料夾不會被刪掉，路徑裡用 `*` 代替版號會同時對到好幾個版本、跑到最舊的那個。）
 
 看到 `"ok": true` 和你的名字就是通了。再請它「列出通訊錄」看成員都在。最後找人往你的收件匣丟一個測試訊息檔，開新對話有報未讀＝全通。
 
