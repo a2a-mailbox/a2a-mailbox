@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// mailbox-radar · 已讀記帳（Phase 6 task 10）
+// mailbox-radar · 已讀記帳（0.6.0）
 //
 // 為什麼要有這一支：
 //   0.5.x 把「處理完把檔名追加進 read.md」寫成 team-mailbox skill 裡的一句散文指示，
@@ -10,12 +10,11 @@
 //   記帳這種「每次都要做、做錯了當下沒人發現」的事，要嘛交給程式，要嘛就是不會發生。
 //   所以這支存在的意義是把那句散文指示換成一個可呼叫、冪等、會回報結果的動作。
 //
-// 兩個呼叫端：
-//   1. inject.mjs——開場（或搭便車）把未讀**具體列出來**給使用者看之後，就地記一筆。
-//      這對應交換區規約的「已掃到」＝機器事實（我的 agent 讀進去了），不是「已告知人」。
-//      只記真的被列出來的那些：formatUnread 有筆數上限，被收成「另有 N 筆較舊的未列出」
-//      的那些沒有出現在任何人眼前，記成已讀會讓它們永遠消失。
-//   2. team-mailbox skill 的「查信箱」收尾——處理完一批訊息後帶著檔名呼叫。
+// 兩個呼叫端，都在「人真的處理過之後」：
+//   1. 開場注入附帶的記帳指示：使用者在那個對話裡確實處理了某幾封，Claude 照指示呼叫。
+//      雷達本身不會自動記帳。把訊息列出來只證明機器掃到了，不證明人看了；
+//      未讀數的意思是「人還沒處理」，不是「機器還沒報過」。
+//   2. team-mailbox skill 的「查信箱」與 mailbox-triage 的收尾：處理完一批訊息後帶著檔名呼叫。
 //
 // 用法：
 //   node markread.mjs [--note "<註記>"] <檔名> [<檔名>...]
@@ -68,7 +67,9 @@ function today(now = new Date()) {
  */
 export function markRead(files, opts = {}) {
   const path = resolveLedgerPath(opts.ledgerPath);
-  const note = opts.note ?? '開場報過';
+  // 預設註記是「已處理」。曾經是「開場報過」，那是一度採用、後來被推翻的「報過就算已讀」語意；
+  // 留著會讓人讀已讀帳時誤以為這筆只是被雷達列出來過，而不是人真的處理了。
+  const note = opts.note ?? '已處理';
   const stamp = today(opts.now);
 
   let raw = '';
@@ -114,7 +115,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const args = process.argv.slice(2);
   const ni = args.indexOf('--note');
   const note = ni >= 0 ? args[ni + 1] : undefined;
-  const rest = args.filter((a, i) => !a.startsWith('--') && i !== ni + 1);
+  // 沒有 --note 時 ni 是 -1。不先擋掉的話，`i !== ni + 1` 會變成 `i !== 0`，
+  // 把第一個檔名當成 note 的值濾掉：單檔會印用法退出，多檔會靜默漏記第一個——
+  // 症狀跟這支要修的「記帳不可靠」一模一樣。
+  const rest = args.filter((a, i) => !a.startsWith('--') && (ni < 0 || i !== ni + 1));
 
   const run = (files) => {
     if (files.length === 0) {

@@ -136,6 +136,37 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   ok('冪等：第二輪不再回報 added／left', r2.report.added.length === 0 && r2.report.left.length === 0);
 }
 
+// ── 4b. 防呆：分享名單只回擁有者一筆時，不把其他人標成離開 ─────
+// 實測過有 Drive 連接器查 permissions 只給擁有者一筆。照規則 1 硬套會把同事全標成 left，
+// 閘門接著把他們的訊息都判成異常，而且當下不會有任何跡象。
+{
+  const before = C.parseContacts([
+    '| alice@example.com | Alice | 王小艾 | drive | active |',
+    '| bob@example.com | Bob | 李小波 | drive | active |',
+    '| carol@example.com | Carol | 陳卡蘿 | drive | active |',
+  ].join('\n'));
+
+  const ownerOnly = C.mergeFromDrive(before, { members: [{ email: 'alice@example.com', role: 'owner' }] });
+  ok('防呆：只回擁有者一筆 → 沒有人被標成離開',
+    ownerOnly.report.left.length === 0 && ownerOnly.list.every((c) => c.status === 'active'));
+  ok('防呆：只回擁有者一筆 → warnings 講清楚原因',
+    ownerOnly.report.warnings.length === 1 && /只回擁有者/.test(ownerOnly.report.warnings[0]), JSON.stringify(ownerOnly.report.warnings));
+
+  const empty = C.mergeFromDrive(before, { members: [] });
+  ok('防呆：分享名單是空的 → 沒有人被標成離開',
+    empty.report.left.length === 0 && empty.list.every((c) => c.status === 'active'));
+
+  const legit = C.mergeFromDrive(before, { members: [{ email: 'alice@example.com' }, { email: 'bob@example.com' }] });
+  ok('防呆：名單有兩筆以上照常運作 → 不在名單的 drive 成員標成離開',
+    legit.report.left.join() === 'carol@example.com' && legit.report.warnings.length === 0);
+
+  const noOtherDrive = C.mergeFromDrive(
+    C.parseContacts('| alice@example.com | Alice | | drive | active |\n| bob@example.com | Bob | | manual | active |'),
+    { members: [{ email: 'alice@example.com' }] });
+  ok('防呆：沒有其他 drive 成員會被影響時不發警告', noOtherDrive.report.warnings.length === 0);
+  ok('防呆：一般情況 report 也帶 warnings 欄位', Array.isArray(legit.report.warnings));
+}
+
 // ── 5. 健檢：自己那列一定要有姓名 ─────────────────────────────
 {
   const full = C.parseContacts('| alice@example.com | Alice | 王小艾 | drive | active |');

@@ -106,6 +106,8 @@ node ~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/*/scripts/detect.mjs --pr
 
 只用桌面版的人跳過。CLI 使用者可以請 Claude 把 `statusline.mjs` 設進自己的 settings.json（指令寫在該檔開頭註解），狀態列會常駐顯示 📬 未讀數。
 
+**每次更新 plugin 之後都要改路徑。** settings.json 裡的路徑帶著版號，例如 `~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/0.6.0/scripts/statusline.mjs`。版號一變，舊路徑就指到不存在的檔案，狀態列會安靜地不再顯示，不會跳任何錯誤。更新之後請 Claude 把路徑裡的版號改成新的。
+
 ### （選配）關掉桌鈴
 
 Mac 上不想要離席時的通知橫幅，在 `~/.claude/team-mailbox/config.md` 加一行 `桌鈴：關`，不用重開。
@@ -144,6 +146,12 @@ Mac 上不想要離席時的通知橫幅，在 `~/.claude/team-mailbox/config.md
 | 寄了訊息對方一直沒反應 | 先確認對方裝了；再請對方開個新對話看有沒有報未讀。沒通知≠沒送到，訊息就在 Drive 上，不會消失 |
 | 對方的 Claude 不肯自動回我的問題 | 多半是對方的通訊錄沒有你、或 email 不對（要是 Drive 檔案擁有者顯示的那個 Google 帳號）。請對方「同步通訊錄」或手動加你 |
 | Windows 沒有離席通知 | 目前桌鈴只有 macOS 實作。Windows 上有開著對話就會被喚醒，沒開對話要等下次開對話 |
+| 同步通訊錄時，分享名單只查到一個人 | 實測過有 Drive 連接器查資料夾的分享名單只回擁有者一筆，不列其他成員。這不是交換區壞掉，改用「通訊錄加人」逐一手動加就好。腳本遇到這種結果不會把其他人標成離開 |
+| 更新之後狀態列不顯示了 | 狀態列設定裡的路徑帶著版號，更新後要把版號改成新的，見上面「終端機版的狀態列未讀數」那段 |
+
+## 給維護者：合進 main 前一定要升版號
+
+實測 Claude Code 判斷要不要更新 plugin，比的是 `plugins/mailbox-radar/.claude-plugin/plugin.json` 裡的 version，不是 commit。合進 main 時版號沒升，已經裝過的人跑 `claude plugin update` 只會得到「already at the latest version」，永遠停在第一次裝的那份。所以每次合進 main 都要升版號。
 
 ## 回饋
 

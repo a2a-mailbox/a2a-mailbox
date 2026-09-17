@@ -27,9 +27,10 @@ export const LEGACY_DIR = process.env.TEAM_MAILBOX_LEGACY_DIR
 
 /**
  * 屬於「使用者資料」的檔案，只有這些會被搬。
- * 刻意不搬 SKILL.md 與 references/：那是 skill 本體，新版由 plugin 提供，
- * 舊位置那份是上一次安裝的殘留。留著不影響運作，使用者想清可以自己刪
- * （指標檔裡會說明），我們不替他刪別人裝的東西。
+ * 刻意不搬 SKILL.md 與 references/：那是 skill 本體，新版由 plugin 提供。
+ * 但留著**並非沒有影響**：舊的 SKILL.md 會跟 plugin 提供的同名 skill 同時被載入，兩份規則不同。
+ * 我們仍然不替使用者刪，因為那個資料夾裡可能還有不屬於本 plugin 的檔（例如別的機制的安裝紀錄），
+ * 整個刪掉會一起弄丟。指標檔要把這兩件事講清楚，而且不能教人「整個資料夾刪掉」。
  */
 const USER_FILES = ['config.md', 'read.md', '通訊錄.md'];
 
@@ -52,8 +53,16 @@ skill 本體現在住在 plugin 裡面，而 plugin 的快取目錄每次更新�
 ## 這裡還剩下什麼
 
 搬走的是 ${USER_FILES.join('、')}。
-如果這個資料夾裡還有 SKILL.md 或 references/，那是上一次安裝 skill 留下的殘留，
-新版由 plugin 提供、不再讀這裡。留著不影響運作，你想清掉可以整個資料夾刪除。
+
+這個資料夾如果還有 SKILL.md 或 references/，那是舊版的 skill 本體。
+**在你把它處理掉之前，舊的 skill 會跟 plugin 提供的新版同時被載入，兩份規則不一樣**，
+Claude 可能照著舊版的做法行事。
+
+**不要直接把整個資料夾刪掉。** 這裡可能還有不屬於信箱雷達的檔案，例如別的機制留下的
+安裝紀錄，整個刪掉會一起弄丟。
+
+- 你的團隊如果有發佈清理舊版用的安裝包，等它來處理。
+- 自己裝的人：先確認資料夾裡沒有你還需要的檔案，再把舊的 SKILL.md 與 references/ 移走。
 `;
 }
 

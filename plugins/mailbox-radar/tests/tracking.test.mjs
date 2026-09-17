@@ -1,4 +1,4 @@
-// 收件匣「交給其他系統追蹤」模式的驗收測試（Phase 6 task 11）。跑法：
+// 收件匣「交給其他系統追蹤」模式的驗收測試（0.6.0）。跑法：
 //   node tests/tracking.test.mjs
 // 全部 assertion 過才 exit 0。測試資料寫在系統暫存目錄，不碰真實的 ~/.claude 與交換區。
 //

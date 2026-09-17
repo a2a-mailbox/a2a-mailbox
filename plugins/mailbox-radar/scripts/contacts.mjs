@@ -227,11 +227,11 @@ function autoAliasMap(list, facts) {
 
 /**
  * 把 Drive 事實合併進通訊錄。純函式：回新陣列與報告，不寫檔。
- * @returns {{list, report:{added:string[], left:string[], reactivated:string[], renamed:string[], manualNotInDrive:string[], unmappedAliases:string[], unmappedEmails:string[]}}}
+ * @returns {{list, report:{added:string[], left:string[], reactivated:string[], renamed:string[], manualNotInDrive:string[], unmappedAliases:string[], unmappedEmails:string[], warnings:string[]}}}
  */
 export function mergeFromDrive(list, facts) {
   const next = list.map((c) => ({ ...c, aliases: [...c.aliases] }));
-  const report = { added: [], left: [], reactivated: [], renamed: [], manualNotInDrive: [], unmappedAliases: [], unmappedEmails: [] };
+  const report = { added: [], left: [], reactivated: [], renamed: [], manualNotInDrive: [], unmappedAliases: [], unmappedEmails: [], warnings: [] };
   const members = (facts.members ?? []).map((m) => normalizeEmail(m.email)).filter((e) => e.includes('@'));
   const memberSet = new Set(members);
   const names = Object.fromEntries(Object.entries(facts.names ?? {}).map(([e, n]) => [normalizeEmail(e), String(n ?? '').trim()]));
@@ -239,11 +239,23 @@ export function mergeFromDrive(list, facts) {
   const emailToAliases = {};
   for (const [alias, email] of Object.entries(aliasMap)) (emailToAliases[email] ??= []).push(alias);
 
+  // 防呆：分享名單只有一筆或是空的，而通訊錄裡還有其他由 Drive 同步來的人。
+  // 這多半不是大家都離開了，而是查詢工具只回擁有者——實測過有 Drive 連接器查資料夾
+  // permissions 只給擁有者一筆、不列其他成員。照規則 1 硬套，會把其他人全部標成離開，
+  // 閘門接著把他們的訊息都判成異常，而且當下完全沒有跡象。所以寧可這次一個都不標，
+  // 把狀況寫進 warnings 讓人決定。代價是「兩人交換區真的有人離開」時不會自動標，用 remove 手動標即可。
+  const wouldLeave = next.filter((c) => c.source === 'drive' && c.status === 'active' && !memberSet.has(c.email));
+  const distrustMembers = members.length <= 1 && wouldLeave.length > 0;
+  if (distrustMembers) {
+    report.warnings.push(`分享名單只查到 ${members.length} 筆，但通訊錄裡還有 ${wouldLeave.length} 位由 Drive 同步來的成員不在其中。這多半是查詢工具只回擁有者、不列其他成員，不是他們都離開了，所以這次沒有把任何人標成離開。確實有人離開請用 remove 手動標；要完整同步請換一個能列出全部分享成員的 Drive 工具，或改用手動加人。`);
+  }
+
   // 規則 1、2：現有的人對照 members
   for (const c of next) {
     if (memberSet.has(c.email)) {
       if (c.status !== 'active') { c.status = 'active'; report.reactivated.push(c.email); }
     } else if (c.source === 'drive') {
+      if (distrustMembers) continue;
       if (c.status !== 'left') { c.status = 'left'; report.left.push(c.email); }
     } else {
       report.manualNotInDrive.push(c.email);

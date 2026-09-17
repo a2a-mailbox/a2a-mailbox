@@ -1,4 +1,4 @@
-// 已讀記帳的驗收測試（Phase 6 task 10）。跑法：
+// 已讀記帳的驗收測試（0.6.0）。跑法：
 //   node tests/markread.test.mjs
 // 全部 assertion 過才 exit 0。測試資料寫在系統暫存目錄，**不碰真實的 ~/.claude**。
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -173,6 +173,39 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
     lines.some((l) => l.trim() === '訊息_甲→乙_無換行結尾_2026-09-01.md'),
     JSON.stringify(lines));
   ok('邊界：黏行檢查後兩筆都認得', ledgerEntries(readFileSync(p2, 'utf8')).size === 2);
+}
+
+// ── 8. CLI：不帶 --note 也不能丟掉檔名（回歸）─────────────────
+// 曾經 `i !== ni + 1` 在沒有 --note 時 ni = -1，把第 0 個參數當成 note 的值濾掉：
+// 單檔印用法 exit 2，多檔靜默漏記第一個。前面 29 條全在函式層，蓋不到命令列這條路。
+{
+  const { spawnSync } = await import('node:child_process');
+  const p = join(root, 'case8', 'read.md');
+  const env = { ...process.env, MAILBOX_RADAR_LEDGER: p };
+  const cli = (...a) => spawnSync(process.execPath, [join(SCRIPTS, 'markread.mjs'), ...a], { env, encoding: 'utf8' });
+  const added = (r) => { try { return JSON.parse(r.stdout).added.length; } catch { return -1; } };
+
+  let r = cli('訊息_甲→乙_一_2026-09-01.md', '訊息_甲→乙_二_2026-09-02.md');
+  ok('CLI：不帶 --note、兩個檔名 → exit 0', r.status === 0, r.stderr);
+  ok('CLI：不帶 --note、兩個檔名 → 兩筆都記到', added(r) === 2, r.stdout);
+
+  r = cli('訊息_甲→乙_三_2026-09-03.md');
+  ok('CLI：不帶 --note、單一檔名 → 記得到、不印用法', r.status === 0 && added(r) === 1, r.stdout + r.stderr);
+
+  r = cli('--note', '已回覆', '訊息_甲→乙_四_2026-09-04.md');
+  ok('CLI：--note 放前面照常', r.status === 0 && added(r) === 1, r.stdout + r.stderr);
+
+  r = cli('訊息_甲→乙_五_2026-09-05.md', '--note', '放在後面');
+  ok('CLI：--note 放在檔名後面也行', r.status === 0 && added(r) === 1, r.stdout + r.stderr);
+
+  const body = readFileSync(p, 'utf8');
+  ok('CLI：--note 的值沒被當成檔名記進去', !body.includes('- 已回覆（') && !body.includes('- 放在後面（'));
+  ok('CLI：註記有寫進去', body.includes('已回覆）') && body.includes('放在後面）'));
+  ok('CLI：預設註記不再是「開場報過」', !body.includes('開場報過') && body.includes('已處理）'));
+  ok('CLI：五筆全在帳上', ledgerEntries(body).size === 5, [...ledgerEntries(body)].join('、'));
+
+  r = cli();
+  ok('CLI：什麼都沒給 → 印用法 exit 2', r.status === 2);
 }
 
 // ── 結果 ─────────────────────────────────────────────────────────
