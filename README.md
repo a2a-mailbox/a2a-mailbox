@@ -101,6 +101,8 @@ node ~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/*/scripts/detect.mjs --pr
 除此之外不碰你機器上任何東西。交換區裡它只寫自己的訊息檔與自己收件匣裡的 `已讀-<自己>.md`。
 
 > 從 0.5.x 升上來的人：舊位置 `~/.claude/skills/team-mailbox/` 裡的 config.md 與 read.md 會在第一次開新對話時自動搬到新位置，舊位置留一個指標檔說明；config.md 裡的「白名單」行會自動轉成通訊錄。都不用手動搬。升級後跑一次「同步通訊錄」把姓名補齊。
+>
+> **升級當下已經開著的對話要全部重開。** 它們掛的還是舊版的通知元件，設定一搬走，它們就去舊位置找不到設定，從此收不到喚醒，而且畫面上不會報錯。運作狀態資料夾也從 `~/.claude/plugins/data/mailbox-radar-a2a-mailbox/` 換到上表的 `mailbox-radar/`，舊的那個不會再更新，留著或刪掉都可以。
 
 ### （選配）終端機版的狀態列未讀數
 
