@@ -176,6 +176,23 @@ const EXTERNAL = '收件匣追蹤：其他系統\n';
   ok('桌鈴外部：狀態遺失後重新建基準，收件匣不整批響', again.ring.every((u) => u.tracked));
 }
 
+// ── 8. 已讀彙總檔：外部模式不寫，預設模式照寫 ─────────────────
+{
+  const { syncReadback } = await import(pathToFileURL(join(SCRIPTS, 'readback.mjs')).href);
+  const { existsSync, readFileSync } = await import('node:fs');
+  const mirror = join(inbox, '已讀-測試員.md');
+  const dataDir = join(root, 'readback-data');
+
+  const ext = syncReadback({ dataDir, configPath: cfg(EXTERNAL), ledgerPath: ledger, exchangeId: 'ext' });
+  ok('彙總檔外部：回報沒寫', ext.wrote === false);
+  ok('彙總檔外部：交換區裡沒有出現彙總檔', !existsSync(mirror));
+  ok('彙總檔外部：也不留鏡射狀態檔', !existsSync(join(dataDir, 'readback-state-ext.json')));
+
+  const own = syncReadback({ dataDir, configPath: cfg(), ledgerPath: ledger, exchangeId: 'own' });
+  ok('彙總檔預設：照寫', own.wrote === true && existsSync(mirror));
+  ok('彙總檔預設：內容列出已讀帳的檔', existsSync(mirror) && readFileSync(mirror, 'utf8').includes('公告_規約更新_2026-09-04.md'));
+}
+
 // ── 結果 ─────────────────────────────────────────────────────────
 for (const name of pass) console.log(`  ok  ${name}`);
 console.log(`\n${pass.length} passed, ${fail.length} failed`);

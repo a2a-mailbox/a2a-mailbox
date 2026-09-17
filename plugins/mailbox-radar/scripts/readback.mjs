@@ -24,7 +24,11 @@ const STATE = 'readback-state.json';
 
 export function syncReadback(opts = {}) {
   const dataDir = opts.dataDir ?? resolveDataDir();
-  const { name, exchange } = readConfig(opts.configPath);
+  const { name, exchange, inboxTracking } = readConfig(opts.configPath);
+  // 收件匣交給其他系統追蹤時不鏡射：這臺的 read.md 不記收件匣處理過沒有，寫出去的彙總檔
+  // 會讓寄件人以為「沒掃到」。而且同一個人另一臺機器若在同一區用同一個代稱，兩臺會輪流
+  // 覆寫同一份 `已讀-<代稱>.md`，Drive 還可能分叉出「(1)」。讓雷達自己追的那臺當唯一 writer。
+  if (inboxTracking === 'external') return { wrote: false, why: '收件匣交給其他系統追蹤，彙總檔不由這臺寫' };
   const ledgerPath = opts.ledgerPath ?? defaultLedgerPath();
 
   let raw = '';
