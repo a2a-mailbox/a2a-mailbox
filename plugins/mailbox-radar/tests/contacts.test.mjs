@@ -221,6 +221,18 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   const v3 = G.verdict(p1, 'bob@example.com');
   ok('閘門：宣稱 Alice 但 owner 是 Bob → 冒寫異常', v3.pass === false && v3.anomaly.some((a) => /冒寫/.test(a)));
 
+  // 同一個人兩個 Google 帳號：通訊錄兩列、同一個代稱，兩個帳號寫的信都要過；別人用這個代稱仍然是冒寫
+  const twoAccounts = [
+    { email: 'dana@company.example', aliases: ['Dana'], name: '', source: 'manual', status: 'active' },
+    { email: 'dana.private@example.com', aliases: ['Dana'], name: '', source: 'manual', status: 'active' },
+    { email: 'eve@example.com', aliases: ['Eve'], name: '', source: 'manual', status: 'active' },
+  ];
+  const pd = write('訊息_Dana→Carol_主題_2026-09-18.md', 'Dana');
+  ok('閘門：同代稱第一個帳號 → pass', G.verdict(pd, 'dana@company.example', twoAccounts).pass === true);
+  ok('閘門：同代稱第二個帳號 → pass', G.verdict(pd, 'dana.private@example.com', twoAccounts).pass === true,
+    JSON.stringify(G.verdict(pd, 'dana.private@example.com', twoAccounts).anomaly));
+  ok('閘門：別人宣稱同一個代稱 → 仍是冒寫', G.verdict(pd, 'eve@example.com', twoAccounts).anomaly.some((a) => /冒寫/.test(a)));
+
   const v4 = G.verdict(p1, 'stranger@example.com');
   ok('閘門：不在通訊錄 → 異常', v4.pass === false && v4.anomaly.some((a) => /不在通訊錄/.test(a)));
 

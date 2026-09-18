@@ -102,7 +102,12 @@ export function verdict(path, ownerEmail, roster = ROSTER, { exchangeId = null }
   if (!owner) anomalies.push('拿不到 Drive owner（掛載外的檔或 API 失敗）');
   if (owner && !entry) anomalies.push(`owner ${owner} 不在通訊錄`);
   if (owner && entry && entry.status !== 'active') anomalies.push(`owner ${owner}（${[...entry.aliases, entry.name].filter(Boolean).join('／') || '無代稱'}）在通訊錄標記為已離開（left）`);
-  if (owner && expectedEmail && owner !== expectedEmail) {
+  // 同一個人可以有好幾個 Google 帳號（公司一個、私人一個），通訊錄就是好幾列、同一個代稱。
+  // 所以比的是「實際寫檔的那個帳號，自己那一列有沒有這個代稱」，不是「這個代稱查到的第一個 email」。
+  // 0.7.4 以前只認第一列，第二個帳號寫的信一律被判成冒寫。
+  const ownerCarriesClaim = !!entry && !!claimedName
+    && [...entry.aliases, entry.name].filter(Boolean).includes(claimedName);
+  if (owner && expectedEmail && owner !== expectedEmail && !ownerCarriesClaim) {
     anomalies.push(`宣稱寄件人 ${claimedName}（應為 ${expectedEmail}）與實際 owner ${owner} 不一致——from 可能被冒寫`);
   }
   if (claimed.frontmatter && claimed.filename && claimed.frontmatter !== claimed.filename) {
