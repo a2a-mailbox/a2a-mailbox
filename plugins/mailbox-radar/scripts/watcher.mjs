@@ -133,7 +133,7 @@ async function tick() {
 
   const lines = fresh.slice(0, 5).map((u) => {
     const who = u.from ? `${u.from} → ` : '';
-    const ex = u.exchangeId ? `交換區「${u.exchangeId}」／` : '';
+    const ex = (u.exchangeLabel ?? u.exchangeId) ? `交換區「${u.exchangeLabel ?? u.exchangeId}」／` : '';
     return `- ${u.type}：${who}${u.subject ?? u.file}（${ex}${u.where}／${u.file}）`;
   });
   if (fresh.length > 5) lines.push(`- （另有 ${fresh.length - 5} 筆同時落地）`);

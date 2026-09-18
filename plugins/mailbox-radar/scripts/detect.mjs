@@ -46,7 +46,11 @@ export function readConfig(configPath = defaultConfigPath()) {
   // 沒寫、或寫別的值＝雷達自己追（通用版預設，行為與改動前相同）。
   const tracking = pick('收件匣追蹤');
   const inboxTracking = tracking && /其他|外部|external/i.test(tracking) ? 'external' : 'radar';
-  return { name, exchange, inboxTracking };
+  // 選填：這一區在報告裡怎麼稱呼。預設交換區原本沒有名字，開場只講「你有 N 筆」；同時掛好幾個一對一的人
+  // 分不出哪一區是誰，所以讓每一區都能取名。額外交換區沒寫就用資料夾名稱（跟 0.7.x 一樣）。
+  // 這只是顯示用的標籤：記帳與認領仍然用資料夾名稱（--exchange），已有的狀態檔不受影響。
+  const label = pick('交換區名稱');
+  return { name, exchange, inboxTracking, label };
 }
 
 /**
@@ -163,15 +167,17 @@ function scanOne({ id = null, configPath, ledgerPath }) {
     arrivals: [],
     scanned: {},
     ledgerCount: 0,
+    label: null,
     error: null,
     errorKind: null,
   };
   let phase = 'config';
   try {
-    const { name, exchange, inboxTracking } = readConfig(configPath);
+    const { name, exchange, inboxTracking, label } = readConfig(configPath);
     r.name = name;
     r.exchangePath = exchange;
     r.inboxTracking = inboxTracking;
+    r.label = label ?? id; // 顯示用；預設交換區沒取名就是 null
     phase = 'scan';
 
     const ledger = readLedger(ledgerPath);
@@ -193,6 +199,7 @@ function scanOne({ id = null, configPath, ledgerPath }) {
           channel: place.channel,
           tracked,
           exchangeId: id,
+          exchangeLabel: label ?? id,
           key: id ? `${id}/${file}` : file,
           ...parseFilename(file),
         });
@@ -230,6 +237,8 @@ export function detect(opts = {}) {
   const result = {
     ok: root.ok,
     name: root.name,
+    // 預設交換區的顯示名稱（config 的「交換區名稱」），沒取就 null
+    label: root.label ?? null,
     // 收件匣由誰追蹤（預設交換區的設定）：'radar'＝雷達自己記帳；'external'＝另有系統在追，雷達對收件匣只做即時通知
     inboxTracking: root.inboxTracking,
     // unread＝要算進未讀數、要在開場列出來的（追蹤中的那些），跨所有交換區。unreadCount 永遠等於它的長度。

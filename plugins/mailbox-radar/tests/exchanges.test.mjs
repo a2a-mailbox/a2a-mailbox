@@ -310,6 +310,44 @@ const backdate = () => { // 跳過 10 秒節流
   writeFileSync(join(badDir, 'config.md'), '名字：Y\n');
   const ctx2 = inject('SessionStart', 'ex-test-2') ?? '';
   ok('注入：額外交換區讀不到時開場有警告', /交換區「讀不到」/.test(ctx2) && /偵測不到/.test(ctx2), ctx2);
+  rmSync(badDir, { recursive: true, force: true });
+}
+
+// ── 12. 交換區名稱：每一區都能取顯示名稱，記帳參數不受影響 ─────
+{
+  // 預設交換區取名「阿明」、雙機取名「兩臺電腦」；後掛沒取名，維持資料夾名稱
+  const rootCfg = readFileSync(join(userDir, 'config.md'), 'utf8');
+  writeFileSync(join(userDir, 'config.md'), rootCfg + '交換區名稱：阿明\n');
+  const duoCfg = readFileSync(join(duoDir, 'config.md'), 'utf8');
+  writeFileSync(join(duoDir, 'config.md'), duoCfg + '交換區名稱：兩臺電腦\n');
+  writeFileSync(join(teamEx, '收件匣-Alice', '訊息_Bob→Alice_取名後新到_2026-09-08.md'), 'x');
+
+  const r = D.detect();
+  ok('取名：預設交換區的顯示名稱讀到', r.label === '阿明', r.label);
+  ok('取名：額外交換區的顯示名稱讀到', r.exchanges.find((x) => x.id === '雙機')?.label === '兩臺電腦');
+  ok('取名：沒取名的額外交換區用資料夾名稱', r.exchanges.find((x) => x.id === '後掛')?.label === '後掛');
+  const rootItem = r.unread.find((u) => u.file === '訊息_Bob→Alice_取名後新到_2026-09-08.md');
+  ok('取名：預設交換區的訊息帶顯示名稱、exchangeId 仍是 null', rootItem?.exchangeLabel === '阿明' && rootItem?.exchangeId === null);
+  ok('取名：預設交換區的 key 仍是純檔名（舊狀態檔不受影響）', rootItem?.key === '訊息_Bob→Alice_取名後新到_2026-09-08.md');
+
+  const text = F.formatUnread(r, { mode: 'session', limit: 20 }) ?? '';
+  ok('取名：開場用「交換區「阿明」（代稱 Alice）」稱呼預設交換區', /交換區「阿明」（代稱 Alice）有/.test(text), text);
+  ok('取名：額外交換區用顯示名稱', /交換區「兩臺電腦」（代稱 Windows）/.test(text), text);
+  ok('取名：預設交換區的訊息前面標【阿明】', /【阿明】訊息：Bob → 取名後新到/.test(text), text);
+
+  const ctx = inject('SessionStart', 'ex-test-3') ?? '';
+  ok('取名：記帳指示列出標籤對照', /標籤對照：/.test(ctx), ctx);
+  ok('取名：對照寫明【阿明】是預設交換區、不帶 --exchange', /【阿明】＝預設交換區，記帳不帶 --exchange/.test(ctx), ctx);
+  ok('取名：對照寫明【兩臺電腦】要帶 --exchange 雙機', /【兩臺電腦】＝ --exchange 雙機/.test(ctx), ctx);
+
+  // 沒取名的情況：預設交換區維持舊寫法，訊息前面不標
+  writeFileSync(join(userDir, 'config.md'), rootCfg);
+  writeFileSync(join(duoDir, 'config.md'), duoCfg);
+  const r2 = D.detect();
+  const t2 = F.formatUnread(r2, { mode: 'session', limit: 20 }) ?? '';
+  ok('不取名：預設交換區照舊只講代稱', /：Alice 有 \d+ 筆/.test(t2), t2);
+  ok('不取名：預設交換區的訊息前面沒有標籤', /\n- 訊息：Bob → 取名後新到/.test(t2), t2);
+  ok('不取名：額外交換區仍用資料夾名稱', /交換區「雙機」（代稱 Windows）/.test(t2), t2);
 }
 
 // ── 結果 ─────────────────────────────────────────────────────────

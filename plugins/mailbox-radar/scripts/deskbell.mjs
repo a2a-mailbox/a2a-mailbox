@@ -103,7 +103,7 @@ export function plan(items, state, now, { repeatMs = REPEAT_MS, tags } = {}) {
 }
 
 function describe(items) {
-  const lines = items.slice(0, 2).map((u) => `${u.exchangeId ? `【${u.exchangeId}】` : ''}${u.type}：${u.from ? u.from + ' → ' : ''}${u.subject ?? u.file}`);
+  const lines = items.slice(0, 2).map((u) => `${(u.exchangeLabel ?? u.exchangeId) ? `【${u.exchangeLabel ?? u.exchangeId}】` : ''}${u.type}：${u.from ? u.from + ' → ' : ''}${u.subject ?? u.file}`);
   if (items.length > 2) lines.push(`…另 ${items.length - 2} 筆`);
   return lines.join('｜');
 }

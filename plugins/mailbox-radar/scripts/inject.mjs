@@ -137,7 +137,7 @@ function contactsGuidance() {
  * 都虛報 58 封未讀，真實數字是 6 封。使用者的說法是「我確實有看過也確實已讀了，
  * 但是它還是報未讀」——問題在記帳不可靠，不在記帳時機。
  */
-function markReadHint(multi = false) {
+function markReadHint(exchanges = []) {
   const root = process.env.CLAUDE_PLUGIN_ROOT;
   const script = root ? join(root, 'scripts', 'markread.mjs') : '<plugin>/scripts/markread.mjs';
   const lines = [
@@ -145,8 +145,17 @@ function markReadHint(multi = false) {
     '使用者在這一輪確實處理了其中某幾封之後（讀完了、回覆了、決定不處理了都算），跑：',
     `  node "${script}" --note "<處理結果>" <檔名> [<檔名>...]`,
   ];
-  if (multi) {
-    lines.push('標了【交換區名稱】的那幾封屬於額外交換區，記帳時要多帶 --exchange <交換區名稱>，不同交換區的分開跑。漏帶會記到預設交換區的帳上，那封就會一直算未讀。');
+  // 訊息前面的【標籤】是顯示名稱，記帳要帶的 --exchange 是資料夾名稱，兩者可能不同（預設交換區取了名字時尤其如此），
+  // 所以逐區列出對照，不讓模型猜。
+  const live = exchanges.filter((x) => x.ok);
+  const labeled = live.filter((x) => x.id || x.label);
+  if (labeled.length > 0) {
+    const map = live.map((x) => {
+      const tag = x.label ?? x.id;
+      if (!x.id) return tag ? `【${tag}】＝預設交換區，記帳不帶 --exchange` : '沒有標籤的＝預設交換區，記帳不帶 --exchange';
+      return `【${tag}】＝ --exchange ${x.id}`;
+    });
+    lines.push(`標籤對照：${map.join('；')}。不同交換區的分開跑。帶錯或漏帶會記到別區的帳上，那封就會一直算未讀。`);
   }
   lines.push(
     '看到回報的 added 有值才算記成功。沒記的話下次開場還會再報一次，那是正確行為。',
@@ -373,9 +382,8 @@ async function main() {
       trace([`readback失敗=${String(err?.message ?? err)}`]);
     }
 
-    const multi = (result.exchanges ?? []).length > 1;
     let context = formatUnread(result, { mode: 'session', limit: SESSION_LIMIT });
-    if (context) context += '\n\n' + markReadHint(multi);
+    if (context) context += '\n\n' + markReadHint(result.exchanges ?? []);
     const note = watcherNote(before, w);
     if (note) context = context ? context + '\n\n' + note : note;
     // 額外交換區讀不到：整體照常運作，但要讓人知道那一區的新訊息現在偵測不到
