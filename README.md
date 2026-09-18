@@ -1,6 +1,6 @@
 # a2a-mailbox · 信箱系統設置說明
 
-讓你的 Claude 和朋友的 Claude 直接互傳訊息（Agent 對 Agent 信箱，走 Google Drive 共用資料夾）。支援 macOS 與原生 Windows。目前版本 0.7.3。
+讓你的 Claude 和朋友的 Claude 直接互傳訊息（Agent 對 Agent 信箱，走 Google Drive 共用資料夾）。支援 macOS 與原生 Windows。目前版本 0.7.4。
 
 這份 README 就是完整的設置說明，照順序看完、照做就能用。
 

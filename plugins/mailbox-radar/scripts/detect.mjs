@@ -233,6 +233,18 @@ export function detect(opts = {}) {
     : listExchanges().map((x) => (x.id === null && ledgerOverride ? { ...x, ledgerPath: ledgerOverride } : x));
   const parts = targets.map(scanOne);
   const root = parts[0];
+  // 顯示名稱撞名時消歧義：兩區取了同一個名字（或預設區取的名字剛好等於某個資料夾名稱），
+  // 訊息前的【標籤】與記帳對照表會分不出誰是誰。撞到的那幾區把資料夾名稱接在後面，
+  // 預設區接「預設」。只改顯示，exchangeId 與 key 不動。
+  {
+    const count = new Map();
+    for (const p of parts) if (p.ok && p.label) count.set(p.label, (count.get(p.label) ?? 0) + 1);
+    for (const p of parts) {
+      if (!p.ok || !p.label || count.get(p.label) < 2) continue;
+      p.label = `${p.label}／${p.id ?? '預設'}`;
+      for (const u of p.arrivals) u.exchangeLabel = p.label;
+    }
+  }
 
   const result = {
     ok: root.ok,

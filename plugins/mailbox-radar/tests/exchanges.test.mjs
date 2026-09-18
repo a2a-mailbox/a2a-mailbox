@@ -348,6 +348,16 @@ const backdate = () => { // 跳過 10 秒節流
   ok('不取名：預設交換區照舊只講代稱', /：Alice 有 \d+ 筆/.test(t2), t2);
   ok('不取名：預設交換區的訊息前面沒有標籤', /\n- 訊息：Bob → 取名後新到/.test(t2), t2);
   ok('不取名：額外交換區仍用資料夾名稱', /交換區「雙機」（代稱 Windows）/.test(t2), t2);
+
+  // 撞名：預設交換區取名「雙機」，跟資料夾「雙機」撞 → 兩邊都接上資料夾名稱消歧義，key 不變
+  writeFileSync(join(userDir, 'config.md'), rootCfg + '交換區名稱：雙機\n');
+  const r3 = D.detect();
+  ok('撞名：預設交換區的標籤變成「雙機／預設」', r3.label === '雙機／預設', r3.label);
+  ok('撞名：資料夾「雙機」的標籤變成「雙機／雙機」', r3.exchanges.find((x) => x.id === '雙機')?.label === '雙機／雙機');
+  ok('撞名：訊息的 key 不受影響', r3.unread.every((u) => (u.exchangeId ? u.key.startsWith(u.exchangeId + '/') : !u.key.includes('/'))));
+  const ctx3 = inject('SessionStart', 'ex-test-4') ?? '';
+  ok('撞名：對照表兩行分得出來', /【雙機／預設】＝預設交換區/.test(ctx3) && /【雙機／雙機】＝ --exchange 雙機/.test(ctx3), ctx3);
+  writeFileSync(join(userDir, 'config.md'), rootCfg);
 }
 
 // ── 結果 ─────────────────────────────────────────────────────────
