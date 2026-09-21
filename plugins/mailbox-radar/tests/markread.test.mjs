@@ -208,6 +208,23 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   ok('CLI：什麼都沒給 → 印用法 exit 2', r.status === 2);
 }
 
+// ── 更新既有註記（--update）──────────────────────────────────
+{
+  const p = join(root, 'update-ledger.md');
+  markRead(['a.md', 'b.md'], { ledgerPath: p, note: '待本人決定，附件_x.md 先不動' });
+  let r = markRead(['a.md'], { ledgerPath: p, note: '已回覆' });
+  ok('update：沒帶 update 時同檔名照舊跳過', r.skipped.includes('a.md') && r.updated === undefined);
+  ok('update：沒帶 update 時註記沒變', /a\.md（\S+ 待本人決定/.test(readFileSync(p, 'utf8')));
+  r = markRead(['a.md', 'c.md'], { ledgerPath: p, note: '已回覆', update: true });
+  const text = readFileSync(p, 'utf8');
+  ok('update：回報 updated 與 added 分開', r.updated?.join() === 'a.md' && r.added.join() === 'c.md');
+  ok('update：既有那一行的註記換掉了', /- a\.md（\S+ 已回覆）/.test(text) && !/a\.md（\S+ 待本人決定/.test(text), text);
+  ok('update：別的行不受影響', /- b\.md（\S+ 待本人決定，附件_x\.md 先不動）/.test(text), text);
+  ok('update：同一個檔名不會出現兩行', text.split('\n').filter((l) => /^- a\.md/.test(l)).length === 1);
+  r = markRead(['附件_x.md'], { ledgerPath: p, note: '另記', update: true });
+  ok('update：註記正文裡提到的檔名不算在帳上，會新增而不是改別人的行', r.added.join() === '附件_x.md' && /- b\.md（\S+ 待本人決定，附件_x\.md 先不動）/.test(readFileSync(p, 'utf8')));
+}
+
 // ── 結果 ─────────────────────────────────────────────────────────
 for (const name of pass) console.log(`  ok  ${name}`);
 console.log(`\n${pass.length} passed, ${fail.length} failed`);

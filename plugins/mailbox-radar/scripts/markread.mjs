@@ -20,6 +20,8 @@
 //   node markread.mjs [--note "<註記>"] [--exchange <交換區名稱>] <檔名> [<檔名>...]
 //   node markread.mjs [--note "<註記>"] [--exchange <交換區名稱>] --stdin   （一行一個檔名）
 //   node markread.mjs [--exchange <交換區名稱>] --list                       （印出目前記了哪些）
+//   加 --update：已經在帳上的檔名改成覆寫它的日期與註記（預設是跳過）。
+//   用在「先記了中間狀態、後來有了結果」：例如先記「待本人決定」、決定之後改成「已回覆」。
 //
 // --exchange：記到額外交換區自己的帳上（見 userdata.mjs 的多交換區說明）。沒帶＝預設交換區。
 //
@@ -64,8 +66,8 @@ function today(now = new Date()) {
 /**
  * 把檔名記進已讀帳。**追加，不重寫**——使用者手寫的註記與排版要原樣保留。
  * @param {string[]} files 檔名（不要帶資料夾前綴也可以帶，會取 basename）
- * @param {{ledgerPath?:string, note?:string, now?:Date}} opts
- * @returns {{added:string[], skipped:string[], path:string}}
+ * @param {{ledgerPath?:string, note?:string, now?:Date, update?:boolean}} opts
+ * @returns {{added:string[], skipped:string[], updated?:string[], path:string}}
  */
 export function markRead(files, opts = {}) {
   const path = resolveLedgerPath(opts.ledgerPath);
@@ -80,14 +82,26 @@ export function markRead(files, opts = {}) {
 
   const added = [];
   const skipped = [];
+  const updated = [];
   for (const f of files) {
     const name = String(f ?? '').split(/[\\/]/).pop().trim();
     if (!name) continue;
-    if (have.has(name)) { skipped.push(name); continue; }
+    if (have.has(name)) { (opts.update ? updated : skipped).push(name); continue; }
     have.add(name);
     added.push(name);
   }
-  if (added.length === 0) return { added, skipped, path };
+  // --update：把既有那一行整行換掉。只認「每行開頭那一個檔名」，跟 ledgerEntries 的讀法一致，
+  // 不會動到註記正文裡剛好提到同一個檔名的別行。
+  if (updated.length > 0) {
+    const want = new Set(updated);
+    raw = raw.split(/\r?\n/).map((line) => {
+      const m = line.match(/^\s*-\s+(.+?)(?:（|\s*$)/);
+      const head = m ? m[1].trim() : null;
+      return head && want.has(head) ? `- ${head}（${stamp} ${note}）` : line;
+    }).join('\n');
+    writeFileSync(path, raw);
+  }
+  if (added.length === 0) return opts.update ? { added, skipped, updated, path } : { added, skipped, path };
 
   mkdirSync(dirname(path), { recursive: true });
   if (!raw) {
@@ -98,7 +112,7 @@ export function markRead(files, opts = {}) {
   const lead = raw.endsWith('\n') ? '' : '\n';
   const lines = added.map((n) => `- ${n}（${stamp} ${note}）`).join('\n');
   appendFileSync(path, lead + lines + '\n');
-  return { added, skipped, path };
+  return opts.update ? { added, skipped, updated, path } : { added, skipped, path };
 }
 
 // ── CLI ────────────────────────────────────────────────────────
@@ -138,10 +152,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
   const run = (files) => {
     if (files.length === 0) {
-      console.error('用法: markread.mjs [--note "<註記>"] [--exchange <交換區名稱>] <檔名>... ｜ --stdin ｜ --list');
+      console.error('用法: markread.mjs [--note "<註記>"] [--exchange <交換區名稱>] [--update] <檔名>... ｜ --stdin ｜ --list');
       process.exit(2);
     }
-    const r = markRead(files, { note, ledgerPath });
+    const r = markRead(files, { note, ledgerPath, update: args.includes('--update') });
     process.stdout.write(JSON.stringify(r) + '\n');
     process.exit(0);
   };
