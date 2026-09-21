@@ -396,6 +396,18 @@ async function main() {
       context = context ? context + '\n\n' + b : b;
       trace([`額外交換區讀不到=${broken.map((x) => x.id).join(',')}`]);
     }
+    // 分類器上次整個失敗過 → 開場講一次（成功一次就會自己清掉）
+    try {
+      const h = JSON.parse(readFileSync(join(dataDir, 'classifier-health.json'), 'utf8'));
+      const c = [
+        `【交換區信箱】⚠️ 自動代答的分類器上次整個跑不起來（${String(h.at).slice(0, 16).replace('T', ' ')} UTC）。在修好之前，收到的每一封都會當成「先問過本人才處理」，不會自動回。請用一句話告知使用者。`,
+        h.authLike
+          ? '看起來是終端機版 Claude 的登入過期了（桌面版登入不算）。請使用者開終端機跑 claude，進去輸入 /login 重新登入一次。'
+          : `原因：${String(h.detail ?? '').slice(0, 300)}`,
+      ].join('\n');
+      context = context ? context + '\n\n' + c : c;
+      trace(['分類器不可用=已提示']);
+    } catch {}
     // 通訊錄空的 → 提示一次（讀取失敗也當空：提示比靜默安全）
     let rosterEmpty = false;
     try { rosterEmpty = loadContacts().filter((c) => c.status === 'active').length === 0; } catch { rosterEmpty = true; }

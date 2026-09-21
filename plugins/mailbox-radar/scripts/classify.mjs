@@ -16,7 +16,9 @@
 // 輸出： {tier, todo, reasons:[…], criteria:{c1,c2,c3}, model, ok}
 
 import { execFileSync, execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { resolveDataDir } from './paths.mjs';
 import { pathToFileURL } from 'node:url';
 import { candidatesFor, modelFor } from './models.mjs';
 
@@ -94,8 +96,12 @@ export function classify(path) {
         ['-p', '--model', candidate, '--max-turns', '1', '--disallowed-tools', '*'],
         RUBRIC.replace('%MESSAGE%', content));
     } catch (err) {
+      // 真正的病因不一定在 stderr：實測過 `claude -p` 登入過期時把
+      // 「Failed to authenticate: OAuth session expired…」印在 stdout，只帶 stderr 就只剩一句 Command failed。
       const stderr = String(err.stderr ?? '').trim().slice(0, 400);
-      attempts.push(`${candidate}: ${String(err.message).slice(0, 120)}${stderr ? `｜stderr: ${stderr}` : ''}`);
+      const stdout = String(err.stdout ?? '').trim().slice(0, 400);
+      attempts.push(`${candidate}: ${String(err.message).slice(0, 120)}`
+        + `${stderr ? `｜stderr: ${stderr}` : ''}${stdout ? `｜stdout: ${stdout}` : ''}`);
       continue;
     }
 
@@ -118,9 +124,28 @@ export function classify(path) {
       result.degraded = true;
       result.reasons.push(`注意：預設模型失敗、由候選 ${candidate} 遞補分類（${attempts.join('；')}）——請在回報使用者時帶到這一句`);
     }
+    noteClassifierHealth(null);
     return result;
   }
+  noteClassifierHealth(attempts.join('；'));
   return FAIL_CLOSED(`全部候選模型都失敗：${attempts.join('；')}`, model);
+}
+
+/**
+ * 分類器整個不可用時留一個記號，讓開場注入講出來；恢復了就清掉。
+ * 不留記號的話它會一直安靜地退化：每封都 fail-closed 成 tier 2、自動代答永遠走不到，
+ * 而開場完全看不出來，只有真的跑到分類器的人才會發現（實測一臺機器的背景登入過期好幾天沒人知道）。
+ */
+export const CLASSIFIER_HEALTH = 'classifier-health.json';
+function noteClassifierHealth(failure) {
+  try {
+    const dir = resolveDataDir();
+    const file = join(dir, CLASSIFIER_HEALTH);
+    if (!failure) { try { unlinkSync(file); } catch {} return; }
+    mkdirSync(dir, { recursive: true });
+    const authLike = /authenticat|OAuth|login|登入|401|unauthorized/i.test(failure);
+    writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), authLike, detail: failure.slice(0, 600) }));
+  } catch {}
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
