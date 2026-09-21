@@ -2,7 +2,7 @@
 // mailbox-radar · 注入器
 //
 // 被 hooks.json 以 shell 形式呼叫（0.5.1 起）：
-//   sh noderun.sh inject.mjs --event SessionStart|PostToolUse
+//   sh noderun.sh inject.mjs --event SessionStart|PostToolUse|UserPromptSubmit
 // stdin 收 harness 給的 hook payload（JSON）；stdout 印 hook JSON 輸出。
 //
 // 紀律：
@@ -14,6 +14,7 @@
 // 0.6.0 接入的三件事：①心跳逐支一檔、復活檢查看本 session 自己的心跳
 // ②開場警告三態化（看 ensureWatcher 的實際回傳值，不看舊心跳）③順手帶起桌鈴（deskbell，全機單例）
 
+import { countsAsActivity, recordActivity } from './attention.mjs';
 import { spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -288,6 +289,11 @@ async function main() {
   const payload = await readPayload();
   const sessionId = payload.session_id ?? 'unknown';
   const now = Date.now();
+
+  // 記一筆「人動了這個對話」（0.7.6）：watcher 靠它決定新訊息該叫醒哪個對話，規則見 attention.mjs。
+  // UserPromptSubmit 只做這件事：不掃交換區、不輸出，使用者每次送訊息都會經過，必須輕。
+  if (countsAsActivity(event, payload)) recordActivity(dataDir, sessionId, { cwd: payload.cwd, kind: event, at: now });
+  if (event === 'UserPromptSubmit') process.exit(0);
 
   // 同事件去重鎖（0.5.1 起是保險、不再是必需）：0.5.0 對每個事件掛 sh 與 node
   // 兩條進場路，mac 上會各起一支，靠這道鎖讓後到者退場。0.5.1 改成單一 shell 形式

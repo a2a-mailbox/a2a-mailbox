@@ -1,0 +1,129 @@
+// 「新訊息該叫醒哪個對話」的驗收測試。跑法：node tests/attention.test.mjs
+// 測試資料寫在系統暫存目錄，不碰真實 data dir。
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const A = await import(pathToFileURL(join(HERE, '..', 'scripts', 'attention.mjs')).href);
+const { chooseNotified, countsAsActivity, recordActivity, readActivities, sweepActivities, projectKey, WARM_MS, RADAR_PREFIX } = A;
+const root = join(tmpdir(), 'mailbox-radar-attention-test');
+rmSync(root, { recursive: true, force: true });
+mkdirSync(root, { recursive: true });
+
+let n = 0, fail = 0;
+function eq(name, got, want) { n++; const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) { fail++; console.log(`✗ ${name}: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`); } else console.log(`✓ ${name}`); }
+
+const now = Date.parse('2026-09-21T10:00:00Z');
+const min = 60_000;
+const pick = (me, sessions) => chooseNotified(me, sessions, { now }).notify;
+/** 哪些對話會發通知（每支 watcher 各自判斷一次，模擬真實情況） */
+const winners = (sessions) => sessions.map((s) => s.session).filter((me) => pick(me, sessions)).sort();
+
+// ── 回報的原始情境：對話 1 做完收尾，使用者在同一個專案新開對話 2 ──
+let ss = [
+  { session: 'conv1', at: now - 5 * min, cwd: '/proj/A' },
+  { session: 'conv2', at: now - 1 * min, cwd: '/proj/A' },
+];
+eq('同專案：只有最後動的對話 2 發', winners(ss), ['conv2']);
+eq('同專案：舊的對話 1 安靜', pick('conv1', ss), false);
+
+// ── 優先規則：每個專案各一個 ──
+ss = [
+  { session: 'a1', at: now - 50 * min, cwd: '/proj/A' },
+  { session: 'a2', at: now - 10 * min, cwd: '/proj/A' },
+  { session: 'b1', at: now - 30 * min, cwd: '/proj/B' },
+  { session: 'c-cold', at: now - 3 * 60 * min, cwd: '/proj/C' },
+  { session: 'a-cold', at: now - 2 * 60 * min, cwd: '/proj/A' },
+];
+eq('兩個有人在用的專案：各叫醒一個', winners(ss), ['a2', 'b1']);
+eq('超過一小時的專案 C 不叫醒', pick('c-cold', ss), false);
+eq('規則名稱是 warm', chooseNotified('a2', ss, { now }).rule, 'warm');
+eq('剛好一小時整還算', winners([{ session: 'x', at: now - WARM_MS, cwd: '/p' }, { session: 'y', at: now - 5 * 60 * min, cwd: '/p' }]), ['x']);
+
+// ── 備援：一小時內沒有任何對話有人動過 → 全機只叫醒一個 ──
+ss = [
+  { session: 'a1', at: now - 5 * 60 * min, cwd: '/proj/A' },
+  { session: 'b1', at: now - 2 * 60 * min, cwd: '/proj/B' },
+  { session: 'c1', at: now - 9 * 60 * min, cwd: '/proj/C' },
+];
+eq('無人情境：跨專案只選最後動過的那一個', winners(ss), ['b1']);
+eq('規則名稱是 fallback', chooseNotified('b1', ss, { now }).rule, 'fallback');
+
+// 沒有活動紀錄的對話（升級前就開著的）：用 watcher 啟動時刻排序
+ss = [
+  { session: 'old1', at: null, cwd: null, startedAt: now - 8 * 60 * min },
+  { session: 'old2', at: null, cwd: null, startedAt: now - 3 * 60 * min },
+  { session: 'old3', at: null, cwd: null },
+];
+eq('全都沒紀錄：用啟動時刻選一個', winners(ss), ['old2']);
+eq('全都沒紀錄也沒啟動時刻：仍然恰好一個', winners([{ session: 'p', at: null, cwd: null }, { session: 'q', at: null, cwd: null }]).length, 1);
+// 有紀錄但過期的，與沒紀錄的混在一起
+ss = [{ session: 'm1', at: now - 4 * 60 * min, cwd: '/x' }, { session: 'm2', at: null, cwd: null, startedAt: now - 2 * 60 * min }];
+eq('過期紀錄 vs 較新的啟動時刻：選較新的', winners(ss), ['m2']);
+// 一個有人在用、其他沒紀錄 → 沒紀錄的不發
+ss = [{ session: 'w', at: now - 2 * min, cwd: '/x' }, { session: 'nolog', at: null, cwd: null, startedAt: now }];
+eq('有人在用時，沒紀錄的對話不發', winners(ss), ['w']);
+
+// ── 邊界 ──
+eq('全機只有我一個：一定發', chooseNotified('solo', [{ session: 'solo', at: null, cwd: null }], { now }), { notify: true, rule: 'solo', winner: 'solo' });
+eq('候選名單漏了我（心跳還沒寫）：補進去再判', chooseNotified('me', [], { now }).notify, true);
+ss = [{ session: 't1', at: now - min, cwd: '/p' }, { session: 't2', at: now - min, cwd: '/p' }];
+eq('同一毫秒：仍然恰好一個', winners(ss).length, 1);
+eq('同一毫秒：兩支 watcher 的結論一致', chooseNotified('t1', ss, { now }).winner, chooseNotified('t2', ss, { now }).winner);
+ss = [{ session: 'f', at: now + 10 * 60 * min, cwd: '/p' }, { session: 'g', at: now - min, cwd: '/p' }];
+eq('時鐘錯亂寫出未來時間的紀錄不算熱', winners(ss), ['g']);
+ss = [{ session: 'n1', at: now - min, cwd: null }, { session: 'n2', at: now - 2 * min, cwd: null }, { session: 'n3', at: now - 3 * min, cwd: '/p' }];
+eq('沒有資料夾資訊的對話自成一組', winners(ss), ['n1', 'n3']);
+
+// 資料夾比較鍵
+eq('結尾斜線不影響分組', projectKey('/proj/A/'), projectKey('/proj/A'));
+if (process.platform === 'win32') eq('Windows 路徑不分大小寫', projectKey('C:\\Proj\\A'), projectKey('c:/proj/a'));
+else eq('非 Windows 路徑分大小寫', projectKey('/Proj/A') === projectKey('/proj/a'), false);
+eq('空資料夾回空字串', projectKey(null), '');
+
+// ── 什麼算「人動了這個對話」 ──
+eq('使用者送出訊息：算', countsAsActivity('UserPromptSubmit', { prompt: '幫我看一下' }), true);
+eq('雷達自己送的通知：不算', countsAsActivity('UserPromptSubmit', { prompt: `${RADAR_PREFIX} 2026-09-21T08:39:03Z】新訊息落地 1 筆` }), false);
+eq('雷達通知前面有空白：不算', countsAsActivity('UserPromptSubmit', { prompt: `\n  ${RADAR_PREFIX}】` }), false);
+eq('宿主在前面加了一行說明：不算', countsAsActivity('UserPromptSubmit', { prompt: `Another Claude session sent a message:
+${RADAR_PREFIX} x】新訊息落地 1 筆` }), false);
+eq('使用者在長訊息後段引用到雷達字樣：算', countsAsActivity('UserPromptSubmit', { prompt: `${'這是一段很長的說明。'.repeat(30)}剛剛那個${RADAR_PREFIX}是什麼` }), true);
+eq('沒有 prompt 欄位：算（寧可多記）', countsAsActivity('UserPromptSubmit', {}), true);
+eq('新開對話：算', countsAsActivity('SessionStart', { source: 'startup' }), true);
+eq('接續對話：算', countsAsActivity('SessionStart', { source: 'resume' }), true);
+eq('壓縮後重來：不算', countsAsActivity('SessionStart', { source: 'compact' }), false);
+eq('工具呼叫：不算', countsAsActivity('PostToolUse', {}), false);
+
+// ── 落檔、讀回、清掃 ──
+eq('記一筆成功', recordActivity(root, 'sess/1:x', { cwd: '/proj/A', kind: 'UserPromptSubmit', at: now }), true);
+recordActivity(root, 'sess2', { cwd: '/proj/B', kind: 'SessionStart', at: now - min });
+let acts = readActivities(root);
+eq('讀回兩筆', acts.size, 2);
+eq('session id 裡的怪字元被換掉', acts.has('sess_1_x'), true);
+eq('時間與資料夾讀得回來', acts.get('sess_1_x'), { at: now, cwd: '/proj/A' });
+recordActivity(root, 'sess2', { cwd: '/proj/B', kind: 'UserPromptSubmit', at: now });
+eq('同一個對話再記一次是覆蓋不是新增', readActivities(root).size, 2);
+eq('覆蓋後時間更新', readActivities(root).get('sess2').at, now);
+eq('清掃：不在名冊上的被清掉', sweepActivities(root, new Set(['sess2'])), 1);
+eq('清掃後只剩名冊上的', [...readActivities(root).keys()], ['sess2']);
+eq('資料夾不存在時讀回空', readActivities(join(root, 'nope')).size, 0);
+eq('資料夾不存在時清掃回 0', sweepActivities(join(root, 'nope'), new Set()), 0);
+
+// ── hook 進場：UserPromptSubmit 要記帳、不輸出、秒退 ──
+const inject = join(HERE, '..', 'scripts', 'inject.mjs');
+const d2 = join(root, 'hookdata'); mkdirSync(d2, { recursive: true });
+const run = (payload) => spawnSync(process.execPath, [inject, '--event', 'UserPromptSubmit', '--data', d2], { input: JSON.stringify(payload), encoding: 'utf8' });
+let r = run({ session_id: 'hook-a', cwd: '/proj/Z', prompt: '你好' });
+eq('hook：正常結束', r.status, 0);
+eq('hook：不輸出任何東西（不往對話塞字）', r.stdout, '');
+eq('hook：記下了活動', JSON.parse(readFileSync(join(d2, 'activity', 'hook-a.json'), 'utf8')).cwd, '/proj/Z');
+r = run({ session_id: 'hook-b', cwd: '/proj/Z', prompt: `${RADAR_PREFIX} x】新訊息落地 1 筆` });
+eq('hook：雷達通知不記帳', existsSync(join(d2, 'activity', 'hook-b.json')), false);
+eq('hook：雷達通知也不輸出', r.stdout, '');
+
+console.log(`\n${n - fail}/${n} 通過`);
+rmSync(root, { recursive: true, force: true });
+process.exit(fail ? 1 : 0);
