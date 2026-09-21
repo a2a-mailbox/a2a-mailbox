@@ -40,8 +40,25 @@ export function projectKey(cwd) {
 }
 
 /**
+ * 這則「提示」是不是宿主或別的程式產生的，而不是人打的（0.7.7）。
+ * 實測（Claude Code 2.1.275）：背景指令結束時，宿主會排一則 <task-notification> 進對話，
+ * 這條路也會觸發 UserPromptSubmit。不擋的話，任何會跑背景指令的對話都會一直被記成「有人在用」，
+ * 剛好就是這套規則想排除的那種收尾後沒人碰的舊對話。
+ * hook 的輸入沒有任何「這則提示從哪來」的欄位（官方文件確認過），只能看內容：
+ *   ①以 XML 樣式標籤開頭（<task-notification>、<system-reminder>、<ci-monitor-event> 這一類宿主訊息）
+ *   ②以宿主替跨對話訊息加的那行說明開頭（別的對話或 watcher 送來的，都不是這個對話的使用者打的）
+ * 人打的訊息極少以標籤開頭；真的遇到，代價只是少記一筆活動，下一則訊息就補回來。
+ */
+const PEER_WRAPPER = 'Another Claude session sent a message:';
+export function looksMachineMade(prompt) {
+  const p = String(prompt ?? '').trimStart();
+  if (/^<[A-Za-z][A-Za-z0-9_-]*[\s>/]/.test(p)) return true;
+  return p.startsWith(PEER_WRAPPER);
+}
+
+/**
  * 這個 hook 事件算不算「人動了這個對話」。
- *   UserPromptSubmit：算，除非內容是雷達自己送的通知。
+ *   UserPromptSubmit：算，除非內容是雷達自己送的通知，或看起來是宿主／別的程式產生的（見 looksMachineMade）。
  *   SessionStart：新開、接續、清空、分岔都算；壓縮（compact）可能是自動發生的，不算。
  */
 export function countsAsActivity(event, payload = {}) {
@@ -51,7 +68,8 @@ export function countsAsActivity(event, payload = {}) {
     // （實測對話紀錄裡是「Another Claude session sent a message:」），通知本文不在最開頭。
     // 這個事件對這類訊息會不會觸發、帶的是哪一種文字，官方文件沒寫，所以兩種都擋。
     const at = p.indexOf(RADAR_PREFIX);
-    return !(at >= 0 && at < 200);
+    if (at >= 0 && at < 200) return false;
+    return !looksMachineMade(p);
   }
   if (event === 'SessionStart') return payload.source !== 'compact';
   return false;

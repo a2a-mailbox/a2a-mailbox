@@ -20,6 +20,9 @@ export const STALE_MS = 10 * 60 * 1000;
 // 單支 watcher 死亡門檻：它每 15 秒跳一次，2 分鐘沒跳＝死了（給睡眠喚醒一點餘裕）
 export const SESSION_STALE_MS = 2 * 60 * 1000;
 
+/** 分類器健康記號的檔名。寫的人（classify）與讀的人（inject）共用這一個定義，免得一邊改名另一邊靜默失效。 */
+export const CLASSIFIER_HEALTH = 'classifier-health.json';
+
 export const CANONICAL_DATA_DIR = join(homedir(), '.claude', 'plugins', 'data', 'mailbox-radar');
 
 export function resolveDataDir(argv = process.argv) {

@@ -18,7 +18,8 @@
 import { execFileSync, execSync } from 'node:child_process';
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveDataDir } from './paths.mjs';
+import { CLASSIFIER_HEALTH, resolveDataDir } from './paths.mjs';
+export { CLASSIFIER_HEALTH }; // 檔名定義在 paths.mjs，這裡照舊轉出給既有的使用端
 import { pathToFileURL } from 'node:url';
 import { candidatesFor, modelFor } from './models.mjs';
 
@@ -136,7 +137,6 @@ export function classify(path) {
  * 不留記號的話它會一直安靜地退化：每封都 fail-closed 成 tier 2、自動代答永遠走不到，
  * 而開場完全看不出來，只有真的跑到分類器的人才會發現（實測一臺機器的背景登入過期好幾天沒人知道）。
  */
-export const CLASSIFIER_HEALTH = 'classifier-health.json';
 function noteClassifierHealth(failure) {
   try {
     const dir = resolveDataDir();

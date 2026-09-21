@@ -23,7 +23,7 @@ import { detect } from './detect.mjs';
 import { formatUnread } from './format.mjs';
 import { loadState, pruneState, saveState } from './state.mjs';
 import { FAIL_THRESHOLD, formatWarning, loadHealth, recordFailure, recordSuccess } from './health.mjs';
-import { SESSION_STALE_MS, heartbeatFromOtherVersion, heartbeatPath, readHeartbeats, resolveDataDir, sessionKey, sessionWatcherStatus, watcherStatus, watchersDir } from './paths.mjs';
+import { CLASSIFIER_HEALTH, SESSION_STALE_MS, heartbeatFromOtherVersion, heartbeatPath, readHeartbeats, resolveDataDir, sessionKey, sessionWatcherStatus, watcherStatus, watchersDir } from './paths.mjs';
 import { configPath, contactsPath, ensureUserData } from './userdata.mjs';
 import { loadContacts, migrateWhitelist } from './contacts.mjs';
 
@@ -404,7 +404,7 @@ async function main() {
     }
     // 分類器上次整個失敗過 → 開場講一次（成功一次就會自己清掉）
     try {
-      const h = JSON.parse(readFileSync(join(dataDir, 'classifier-health.json'), 'utf8'));
+      const h = JSON.parse(readFileSync(join(dataDir, CLASSIFIER_HEALTH), 'utf8'));
       const c = [
         `【交換區信箱】⚠️ 自動代答的分類器上次整個跑不起來（${String(h.at).slice(0, 16).replace('T', ' ')} UTC）。在修好之前，收到的每一封都會當成「先問過本人才處理」，不會自動回。請用一句話告知使用者。`,
         h.authLike

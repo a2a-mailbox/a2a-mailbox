@@ -1,7 +1,7 @@
 {
   "name": "mailbox-radar",
   "displayName": "信箱雷達（mailbox radar）",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "偵測 Google Drive 交換區的未讀訊息，並在 session 開場、工具呼叫後、狀態列提示；有對話開著時用 watcher 喚醒對話，全機沒對話時用桌鈴提醒人（目前僅 macOS 橫幅，Windows 暫無）；同一封訊息多對話搶答以單機 claim 鎖避免重複。team-mailbox skill 隨本 plugin 一起安裝，使用者設定、已讀帳與通訊錄（成員名單，可從 Drive 分享名單同步）存在 ~/.claude/team-mailbox/。一臺機器可同時掛多個交換區（例如團隊一個、自己兩臺電腦互傳一個），各區代稱、成員、已讀帳獨立。支援 macOS 與原生 Windows。",
   "author": {
     "name": "a2a-mailbox maintainers",

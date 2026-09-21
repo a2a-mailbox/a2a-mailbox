@@ -91,6 +91,13 @@ eq('雷達通知前面有空白：不算', countsAsActivity('UserPromptSubmit', 
 eq('宿主在前面加了一行說明：不算', countsAsActivity('UserPromptSubmit', { prompt: `Another Claude session sent a message:
 ${RADAR_PREFIX} x】新訊息落地 1 筆` }), false);
 eq('使用者在長訊息後段引用到雷達字樣：算', countsAsActivity('UserPromptSubmit', { prompt: `${'這是一段很長的說明。'.repeat(30)}剛剛那個${RADAR_PREFIX}是什麼` }), true);
+eq('背景指令結束的宿主通知：不算', countsAsActivity('UserPromptSubmit', { prompt: '<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n</task-notification>' }), false);
+eq('宿主的系統提醒：不算', countsAsActivity('UserPromptSubmit', { prompt: '  <system-reminder>日期已變更</system-reminder>' }), false);
+eq('帶屬性的標籤開頭：不算', countsAsActivity('UserPromptSubmit', { prompt: '<ci-monitor-event pr="12">失敗</ci-monitor-event>' }), false);
+eq('別的對話送來的訊息（不是雷達）：不算', countsAsActivity('UserPromptSubmit', { prompt: 'Another Claude session sent a message:\n請幫我看一下這個檔' }), false);
+eq('人打的訊息裡面有標籤但不在開頭：算', countsAsActivity('UserPromptSubmit', { prompt: '這段 <div> 為什麼不會置中？' }), true);
+eq('人打的小於符號開頭但不是標籤：算', countsAsActivity('UserPromptSubmit', { prompt: '< 3 的情況要怎麼處理' }), true);
+eq('人打的斜線指令：算', countsAsActivity('UserPromptSubmit', { prompt: '/handoff' }), true);
 eq('沒有 prompt 欄位：算（寧可多記）', countsAsActivity('UserPromptSubmit', {}), true);
 eq('新開對話：算', countsAsActivity('SessionStart', { source: 'startup' }), true);
 eq('接續對話：算', countsAsActivity('SessionStart', { source: 'resume' }), true);
