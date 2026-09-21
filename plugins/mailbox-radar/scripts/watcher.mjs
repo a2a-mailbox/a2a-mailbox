@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { detect } from './detect.mjs';
 import { FAIL_THRESHOLD, recordFailure, recordSuccess } from './health.mjs';
-import { chooseNotified, readActivities, sweepActivities } from './attention.mjs';
+import { chooseNotified, readActivities, settleActivity, sweepActivities } from './attention.mjs';
 import { SESSION_STALE_MS, heartbeatPath, readHeartbeats, resolveDataDir, sessionKey, socketAlive, watchersDir } from './paths.mjs';
 import { pickFresh } from './state.mjs';
 
@@ -129,6 +129,10 @@ let first = true;
 
 async function tick() {
   if (!socketAlive(SOCK)) bye('收件通道已消失，session 應已結束');
+
+  // 趁那一則還在對話紀錄的檔尾，把自己這個對話「待確認」的活動結算掉（見 attention.mjs）
+  const settled = settleActivity(dataDir, sessionId);
+  if (settled.machine > 0) log(`活動結算：${settled.machine} 則是程式產生的提示，不算有人在用`);
 
   let r;
   try { r = detect(); }

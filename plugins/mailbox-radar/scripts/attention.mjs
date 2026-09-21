@@ -14,7 +14,7 @@
 // 各自讀同一批檔案、各自算「是不是我」。大家看的是同一份資料、用同一條規則，所以不需要互相溝通。
 // 沒被選中的對話不會漏信：PostToolUse 的注入本來就會在使用者回去動它的那一輪補報未讀。
 
-import { mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { sessionKey } from './paths.mjs';
 
@@ -75,15 +75,126 @@ export function countsAsActivity(event, payload = {}) {
   return false;
 }
 
-/** 記一筆活動。失敗不擋事（最壞情況是這個對話排序靠後）。 */
-export function recordActivity(dataDir, sessionId, { cwd, kind, at = Date.now() } = {}) {
+// ── 對話紀錄裡的來源欄位（0.7.7）────────────────────────────────────────────
+// 內容比對只是近似：實測別的對話送來的訊息，在收件對話「正在跑」的時候，hook 拿到的是訊息原文、
+// 沒有宿主那行說明；排程自動觸發的提示也長得跟人打的一樣。這兩種光看內容分不出來。
+// 宿主其實知道每則提示從哪來，只是沒有放進 hook 的輸入，而是寫在對話紀錄（transcript）裡：
+//   人打的            origin.kind = 'human'
+//   別的對話／watcher  origin.kind = 'peer'
+//   背景指令結束       origin.kind = 'task-notification'，或排隊紀錄的 commandMode = 'task-notification'
+//   排程自動觸發       沒有 origin、isMeta = true
+// 所以做兩段：hook 當下先用內容擋掉明顯的，過得了的記成「待確認」；之後由 watcher 去對話紀錄
+// 找時間最接近的那一則，看它的來源。對話紀錄的格式不是官方公開的介面，隨時可能變，
+// 所以找不到、讀不懂一律回 'unknown'，unknown 當成人打的——退回去就是內容比對的結果，不會更糟。
+
+const TAIL_BYTES = 1_500_000;
+const MATCH_TOLERANCE_MS = 10_000;
+
+function readTail(file, bytes = TAIL_BYTES) {
+  const fd = openSync(file, 'r');
+  try {
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, bytes);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const text = buf.toString('utf8');
+    return len < size ? text.slice(text.indexOf('\n') + 1) : text; // 從中間切入：第一行不完整，丟掉
+  } finally { closeSync(fd); }
+}
+
+/** 一筆對話紀錄是不是「提示」，是的話回 {times:number[], human:boolean}；不是回 null。 */
+function promptRecord(o) {
+  if (o?.type === 'user') {
+    const c = o.message?.content;
+    if (Array.isArray(c) && c.some((x) => x?.type === 'tool_result')) return null; // 工具結果不是提示
+    const kind = o.origin?.kind;
+    const human = kind ? kind === 'human' : o.isMeta !== true;
+    return { times: [Date.parse(o.timestamp)], human };
+  }
+  if (o?.type === 'attachment' && o.attachment?.type === 'queued_command') {
+    const a = o.attachment;
+    const kind = (a.origin ?? o.origin)?.kind;
+    const human = kind ? kind === 'human' : (a.commandMode === 'prompt' && (a.isMeta ?? o.isMeta) !== true);
+    return { times: [Date.parse(a.timestamp), Date.parse(o.timestamp)], human };
+  }
+  return null;
+}
+
+/**
+ * 這個時刻送進對話的那則提示，是人打的還是程式產生的。
+ * @returns {'human'|'machine'|'unknown'}
+ */
+export function originOf(transcriptPath, atMs, { toleranceMs = MATCH_TOLERANCE_MS } = {}) {
+  if (!transcriptPath) return 'unknown';
+  let text;
+  try { text = readTail(transcriptPath); } catch { return 'unknown'; }
+  let best = null;
+  const near = [];
+  for (const line of text.split('\n')) {
+    if (!line.includes('"user"') && !line.includes('queued_command')) continue;
+    let rec;
+    try { rec = promptRecord(JSON.parse(line)); } catch { continue; }
+    if (!rec) continue;
+    for (const t of rec.times) {
+      if (!Number.isFinite(t)) continue;
+      const d = Math.abs(t - atMs);
+      if (d > toleranceMs) continue;
+      near.push({ d, human: rec.human });
+      if (!best || d < best.d) best = { d, human: rec.human };
+    }
+  }
+  if (!best) return 'unknown';
+  // 人送出一則訊息時，宿主常在同一瞬間跟著寫幾則自己的附帶紀錄（技能的說明文字、指令展開），
+  // 時間幾乎重疊，光取最近的一則會挑錯。所以跟最近那則差不到 1.5 秒的都算同一批，裡面有人打的就算人打的。
+  return near.some((n) => n.human && n.d - best.d <= 1500) ? 'human' : 'machine';
+}
+
+const MAX_PENDING = 20;
+
+function loadRecord(file) {
+  try {
+    const a = JSON.parse(readFileSync(file, 'utf8'));
+    return { at: a.at ?? null, cwd: a.cwd ?? null, kind: a.kind ?? null, pending: Array.isArray(a.pending) ? a.pending : [] };
+  } catch { return { at: null, cwd: null, kind: null, pending: [] }; }
+}
+
+function saveRecord(file, sessionId, r) {
+  writeFileSync(file, JSON.stringify({ session: sessionKey(sessionId), at: r.at, cwd: r.cwd, kind: r.kind, pending: r.pending }));
+}
+
+/**
+ * 記一筆活動。失敗不擋事（最壞情況是這個對話排序靠後）。
+ * 帶 transcript 的（UserPromptSubmit）先記成「待確認」，不帶的（SessionStart）直接算數。
+ */
+export function recordActivity(dataDir, sessionId, { cwd, kind, at = Date.now(), transcript = null } = {}) {
   try {
     mkdirSync(activityDir(dataDir), { recursive: true });
-    writeFileSync(activityPath(dataDir, sessionId), JSON.stringify({
-      session: sessionKey(sessionId), at: new Date(at).toISOString(), cwd: cwd ?? null, kind: kind ?? null,
-    }));
+    const file = activityPath(dataDir, sessionId);
+    const r = loadRecord(file);
+    const iso = new Date(at).toISOString();
+    if (transcript) {
+      r.pending = [...r.pending, { at: iso, cwd: cwd ?? null, transcript }].slice(-MAX_PENDING);
+    } else {
+      r.at = iso; r.cwd = cwd ?? null; r.kind = kind ?? null;
+    }
+    saveRecord(file, sessionId, r);
     return true;
   } catch { return false; }
+}
+
+/** 一筆紀錄的有效活動時間：已確認的，與「待確認裡最新一則不是程式產生的」，取較晚者。 */
+function effective(r) {
+  let at = Date.parse(r.at); let cwd = r.cwd;
+  if (!Number.isFinite(at)) at = null;
+  const ps = [...r.pending].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  for (const p of ps) {
+    const t = Date.parse(p.at);
+    if (!Number.isFinite(t) || (at != null && t <= at)) break;
+    if (originOf(p.transcript, t) === 'machine') continue;
+    at = t; cwd = p.cwd ?? cwd;
+    break;
+  }
+  return at == null ? null : { at, cwd };
 }
 
 /** 讀出所有活動紀錄：Map<sessionKey, {at:number, cwd}>。壞檔跳過。 */
@@ -94,12 +205,46 @@ export function readActivities(dataDir) {
   for (const f of names) {
     if (!f.endsWith('.json')) continue;
     try {
-      const a = JSON.parse(readFileSync(join(activityDir(dataDir), f), 'utf8'));
-      const at = Date.parse(a.at);
-      if (Number.isFinite(at)) out.set(f.replace(/\.json$/, ''), { at, cwd: a.cwd ?? null });
+      const e = effective(loadRecord(join(activityDir(dataDir), f)));
+      if (e) out.set(f.replace(/\.json$/, ''), e);
     } catch {}
   }
   return out;
+}
+
+/**
+ * 把自己這個對話的「待確認」結算掉（watcher 每輪呼叫）。要趁早做：對話紀錄一直在長，
+ * 晚了那一則就不在檔尾、查不到了。剛記下的先不動（對話紀錄是非同步寫的，可能還沒落檔）；
+ * 查不到的等兩分鐘，還是查不到就當成人打的。
+ * @returns {{human:number, machine:number, kept:number}}
+ */
+export function settleActivity(dataDir, sessionId, { now = Date.now(), minAgeMs = 3000, giveUpMs = 120_000 } = {}) {
+  const tally = { human: 0, machine: 0, kept: 0 };
+  try {
+    const file = activityPath(dataDir, sessionId);
+    const before = loadRecord(file);
+    if (before.pending.length === 0) return tally;
+    const verdicts = new Map();
+    for (const p of before.pending) {
+      const t = Date.parse(p.at);
+      if (now - t < minAgeMs) continue;
+      let v = originOf(p.transcript, t);
+      if (v === 'unknown' && now - t >= giveUpMs) v = 'human';
+      if (v !== 'unknown') verdicts.set(p.at, v);
+    }
+    if (verdicts.size === 0) { tally.kept = before.pending.length; return tally; }
+    const r = loadRecord(file); // 重讀：結算期間 hook 可能又記了新的，不能把它蓋掉
+    const keep = [];
+    for (const p of r.pending) {
+      const v = verdicts.get(p.at);
+      if (!v) { keep.push(p); continue; }
+      tally[v] += 1;
+      if (v === 'human' && !(Date.parse(r.at) >= Date.parse(p.at))) { r.at = p.at; r.cwd = p.cwd ?? r.cwd; r.kind = 'UserPromptSubmit'; }
+    }
+    r.pending = keep; tally.kept = keep.length;
+    saveRecord(file, sessionId, r);
+  } catch {}
+  return tally;
 }
 
 /** 清掉已經不在名冊上的對話留下的活動紀錄（對話結束後沒人會再讀它）。 */

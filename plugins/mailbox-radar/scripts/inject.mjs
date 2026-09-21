@@ -292,7 +292,11 @@ async function main() {
 
   // 記一筆「人動了這個對話」（0.7.6）：watcher 靠它決定新訊息該叫醒哪個對話，規則見 attention.mjs。
   // UserPromptSubmit 只做這件事：不掃交換區、不輸出，使用者每次送訊息都會經過，必須輕。
-  if (countsAsActivity(event, payload)) recordActivity(dataDir, sessionId, { cwd: payload.cwd, kind: event, at: now });
+  if (countsAsActivity(event, payload)) recordActivity(dataDir, sessionId, {
+    cwd: payload.cwd, kind: event, at: now,
+    // 使用者送出的訊息先記成待確認，之後由 watcher 對照對話紀錄裡的來源欄位；開場不用確認
+    transcript: event === 'UserPromptSubmit' ? (payload.transcript_path ?? null) : null,
+  });
   if (event === 'UserPromptSubmit') process.exit(0);
 
   // 同事件去重鎖（0.5.1 起是保險、不再是必需）：0.5.0 對每個事件掛 sh 與 node
