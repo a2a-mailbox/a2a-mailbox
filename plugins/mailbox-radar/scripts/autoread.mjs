@@ -14,28 +14,67 @@ import { readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { exchangeForPath, parseFilename, readConfig } from './detect.mjs';
 import { markRead } from './markread.mjs';
+import { listExchanges } from './userdata.mjs';
 
-/** 從工具呼叫的輸入裡撈出可能剛寫出的回執路徑。Write／Edit 看 file_path；Bash 看指令字串裡有沒有回執檔路徑。 */
-export function replyPathsFromTool(toolName, toolInput = {}) {
+/** 掛著的交換區，各自帶上設定檔裡的根目錄與自己的名字。讀不到設定的略過。 */
+export function loadExchanges() {
+  return listExchanges().map((x) => {
+    try { const c = readConfig(x.configPath); return { ...x, exchangePath: c.exchange, name: c.name }; } catch { return null; }
+  }).filter((x) => x && x.exchangePath);
+}
+
+/**
+ * 一個交換區根目錄在指令字串裡可能出現的幾種寫法：照設定檔原樣、斜線版、Git Bash 的 /c/… 版。
+ * 這些都是照抄根目錄得來的，不是猜的，所以路徑裡有空白、&、括號都不影響。
+ */
+export function rootVariants(root) {
+  const r = String(root).replace(/[\\/]+$/, '');
+  const fwd = r.replace(/\\/g, '/');
+  const out = new Set([r, fwd]);
+  const m = fwd.match(/^([A-Za-z]):\/(.*)$/);
+  if (m) out.add(`/${m[1].toLowerCase()}/${m[2]}`);
+  return [...out];
+}
+
+/**
+ * 從工具呼叫的輸入裡撈出可能剛寫出的回執路徑。
+ * Write／Edit 看 file_path。Bash 看指令字串：不從字串猜路徑邊界（空白會斷），而是拿每個掛著的
+ * 交換區根目錄去比對，命中後只接受緊跟著的 /收件匣-<X>/回執_….md。指令裡用 shell 變數組出來的
+ * 路徑（$EX/收件匣-…）hook 看到的是沒展開的字面值，無從對應，這種撈不到是已知的限制。
+ * @param {string} toolName
+ * @param {object} toolInput
+ * @param {{exchanges?:Array}} [opts] exchanges 測試用：[{exchangePath, ...}]
+ */
+export function replyPathsFromTool(toolName, toolInput = {}, opts = {}) {
   if (!toolInput || typeof toolInput !== 'object') return [];
   if (toolName === 'Write' || toolName === 'Edit') {
     const p = toolInput.file_path;
     return typeof p === 'string' && /回執_[^\\/]+\.md$/i.test(p) ? [p] : [];
   }
-  if (toolName === 'Bash') {
-    const cmd = String(toolInput.command ?? '');
-    const out = new Set();
-    for (const m of cmd.matchAll(/[^\s"'<>|;&]*收件匣-[^\s"'<>|;&]*?回執_[^\s"'<>|;&]+\.md/g)) out.add(m[0]);
-    return [...out];
+  if (toolName !== 'Bash') return [];
+  const cmd = String(toolInput.command ?? '');
+  if (!cmd.includes('回執_')) return [];
+  const list = opts.exchanges ?? loadExchanges();
+  const out = new Set();
+  for (const x of list) {
+    if (!x.exchangePath) continue;
+    for (const v of rootVariants(x.exchangePath)) {
+      let i = cmd.indexOf(v);
+      while (i >= 0) {
+        const rest = cmd.slice(i + v.length).match(/^[\\/](收件匣-[^\\/"'\n\r]+)[\\/](回執_[^\\/"'\n\r]+?\.md)/);
+        if (rest) out.add(join(x.exchangePath, rest[1], rest[2]));
+        i = cmd.indexOf(v, i + v.length);
+      }
+    }
   }
-  return [];
+  return [...out];
 }
 
 /**
- * 寫出了一個回執：找出它回覆的原訊息並記帳。
+ * 寫出了一個回執：找出它回覆的原訊息並記帳。**有副作用**（會寫已讀帳）；只想看會記哪些，帶 dryRun。
  * @param {string} replyPath 剛寫出的回執檔路徑
- * @param {{exchanges?:Array, now?:Date}} [opts] exchanges 測試用：[{id, ledgerPath, exchangePath, name}]
- * @returns {{marked:string[], exchangeId:string|null, reason?:string}}
+ * @param {{exchanges?:Array, now?:Date, dryRun?:boolean}} [opts] exchanges 測試用：[{id, ledgerPath, exchangePath, name}]
+ * @returns {{marked:string[], alreadyMarked?:string[], exchangeId:string|null, reason?:string, dryRun?:true}}
  */
 export function autoReadOnReply(replyPath, opts = {}) {
   const none = (reason) => ({ marked: [], exchangeId: null, reason });
@@ -47,10 +86,10 @@ export function autoReadOnReply(replyPath, opts = {}) {
   if (!m) return none('不在收件匣裡');
   const sender = m[1];
 
-  const ex = exchangeForPath(replyPath, opts.exchanges);
+  const list = opts.exchanges ?? loadExchanges();
+  const ex = exchangeForPath(replyPath, list);
   if (!ex) return none('不在任何掛著的交換區裡');
-  let name = ex.name;
-  if (!name) { try { name = readConfig(ex.configPath).name; } catch { return none('讀不到交換區設定'); } }
+  const name = ex.name;
   if (!name) return none('交換區設定沒有名字');
   if (name === sender) return none('回執寫在自己的收件匣'); // 自己回自己：不是這裡要處理的
 
@@ -63,6 +102,7 @@ export function autoReadOnReply(replyPath, opts = {}) {
     return (p.type === '訊息' || p.type === '請求') && p.from === sender && p.subject === reply.subject;
   });
   if (targets.length === 0) return none('自己的收件匣裡沒有同主題、同寄件人的原訊息');
+  if (opts.dryRun) return { marked: targets, exchangeId: ex.id ?? null, dryRun: true };
 
   const r = markRead(targets, { ledgerPath: ex.ledgerPath, note: `已回執（${basename(replyPath)}）`, now: opts.now });
   return { marked: r.added, alreadyMarked: r.skipped, exchangeId: ex.id ?? null };
