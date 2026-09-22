@@ -122,6 +122,12 @@ function myTurn() {
   }
 }
 
+/** 給人看的本機時間（例：2026-09-22 11:52:21）。通知曾用 UTC 的 ISO 字串，使用者把 03:52 當成凌晨、以為雷達晚了八小時才報。 */
+function localStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 const seen = new Set();
 const baselined = new Set(); // 已經建過基準的交換區（預設交換區記成空字串）
 let warned = false;
@@ -144,7 +150,7 @@ async function tick() {
     const h = recordFailure(dataDir, r.error);
     if (h.consecutiveFailures >= FAIL_THRESHOLD && !warned) {
       warned = await deliver(
-        `【交換區信箱・自動通知】⚠️ 信箱雷達讀不到交換區（連續 ${h.consecutiveFailures} 次，${new Date().toISOString()}）：${r.error}。新訊息現在偵測不到，請用一句話告知使用者。這是本機 watcher 的自動訊息，不是人。`);
+        `【交換區信箱・自動通知】⚠️ 信箱雷達讀不到交換區（連續 ${h.consecutiveFailures} 次，${localStamp()}）：${r.error}。新訊息現在偵測不到，請用一句話告知使用者。這是本機 watcher 的自動訊息，不是人。`);
     }
     return;
   }
@@ -170,7 +176,7 @@ async function tick() {
   });
   if (fresh.length > 5) lines.push(`- （另有 ${fresh.length - 5} 筆同時落地）`);
   await deliver([
-    `【交換區信箱・自動通知 ${new Date().toISOString()}】新訊息落地 ${fresh.length} 筆：`,
+    `【交換區信箱・自動通知 ${localStamp()}】新訊息落地 ${fresh.length} 筆：`,
     ...lines,
     // 尾註刻意壓到一行（0.7.8）：這則訊息會永久留在對話裡、每輪重讀，幾十則累積起來就是幾萬 token；
     // 規則本身沒變，只是不再每次把整段規程講一遍。
