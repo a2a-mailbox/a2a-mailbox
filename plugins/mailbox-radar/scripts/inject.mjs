@@ -15,6 +15,7 @@
 // ②開場警告三態化（看 ensureWatcher 的實際回傳值，不看舊心跳）③順手帶起桌鈴（deskbell，全機單例）
 
 import { countsAsActivity, recordActivity } from './attention.mjs';
+import { autoReadOnReply, replyPathsFromTool } from './autoread.mjs';
 import { spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -450,6 +451,31 @@ async function main() {
     ]);
     if (context) emit(context);
     process.exit(0);
+  }
+
+  // ── PostToolUse：回執寫出即記帳（0.8.0，見 autoread.mjs）────────
+  // 放在節流之前：這件事跟掃描節奏無關，漏掉一次那封信就會一直算未讀。
+  {
+    const autoNotes = [];
+    for (const p of replyPathsFromTool(payload.tool_name, payload.tool_input)) {
+      try {
+        const r = autoReadOnReply(p);
+        if (r.marked.length > 0) {
+          const tag = r.exchangeId ? `【${r.exchangeId}】` : '';
+          autoNotes.push(`${tag}${r.marked.join('、')}`);
+          trace([`回執記帳=${r.marked.length}`, `交換區=${r.exchangeId ?? '預設'}`]);
+        } else {
+          trace([`回執記帳=0`, `原因=${r.reason ?? '已記過'}`]);
+        }
+      } catch (err) {
+        trace([`回執記帳例外=${String(err?.message ?? err)}`]);
+      }
+    }
+    if (autoNotes.length > 0) {
+      // hook 的輸出只能是一則 JSON：這一輪只報記帳、跳過搭便車掃描（下一次工具呼叫就會再掃）
+      emit(`【交換區信箱】回執已寫出，被回覆的原訊息已自動記進已讀帳：${autoNotes.join('；')}。不用再跑 markread。`);
+      process.exit(0);
+    }
   }
 
   // ── PostToolUse：搭便車偵測 ──────────────────────────────────
