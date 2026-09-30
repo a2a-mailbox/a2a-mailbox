@@ -19,6 +19,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { ledgerNames } from './ledger.mjs';
 import { configPath as defaultConfigPath, ledgerPath as defaultLedgerPath, listExchanges } from './userdata.mjs';
 
 const BOARD_DIR = '公告板';
@@ -70,18 +71,10 @@ export function readLedger(ledgerPath = defaultLedgerPath()) {
     if (err.code === 'ENOENT') return new Set();
     throw err;
   }
-  const seen = new Set();
-  for (const line of raw.split(/\r?\n/)) {
-    // 去掉條列符號／編號，再取到第一個註記起始字元或空白為止
-    const body = line.replace(/^\s*(?:[-*+]|\d+[.)])\s*/, '').trim();
-    const token = body.split(/[（(\s]/)[0];
-    // team-mailbox skill 寫入的條目可能帶資料夾前綴（公告板/…、收件匣-X/…），
-    // 掃描端用純檔名比對——取 basename 讓兩種格式都認得（0.4.3，試點使用者回報：
-    // 前綴版比不到會讓歷史已讀在裝機時全部詐屍成未讀）。分隔符正反斜線都認（Windows）。
-    const name = token.split(/[\\/]/).pop();
-    if (/\.(?:md|html)$/i.test(name)) seen.add(name);
-  }
-  return seen;
+  // 一行記的是哪個檔名，規則在 ledger.mjs（與 markread 共用同一份，避免兩邊漂移）。
+  // team-mailbox skill 寫入的條目可能帶資料夾前綴（公告板/…、收件匣-X/…），掃描端用純檔名比對，
+  // 所以那邊會取 basename（0.4.3，試點使用者回報：前綴版比不到會讓歷史已讀在裝機時全部詐屍成未讀）。
+  return ledgerNames(raw);
 }
 
 /** 從檔名（只有檔名）解析 metadata。解析不出來也一定回傳可用的物件。 */

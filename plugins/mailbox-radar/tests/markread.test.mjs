@@ -225,6 +225,72 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   ok('update：註記正文裡提到的檔名不算在帳上，會新增而不是改別人的行', r.added.join() === '附件_x.md' && /- b\.md（\S+ 待本人決定，附件_x\.md 先不動）/.test(readFileSync(p, 'utf8')));
 }
 
+// ── 檔名帶空白或括號（0.8.1）─────────────────────────────────
+// 0.8.0 以前「遇到空白或括號就切」，檔名帶空白的那一行切出來沒有副檔名、不算數，
+// 該檔記帳幾次都永遠被報未讀（2026-09-30 使用者回報）。
+{
+  const SPACE = 'AB X1-LITE 市場調查_全集_v2.1修訂版.html';
+  const HALF = '報告 (終版) v2.md';
+  const FULL = '訊息_甲→乙_提案（第二版）_2026-09-30.md';
+  let seq = 0;
+  // 同一份內容給 markread 與 detect 各讀一次，兩邊都要對
+  const both = (raw) => {
+    const p = join(root, `names-${seq++}.md`);
+    writeFileSync(p, raw);
+    return [ledgerEntries(raw), readLedger(p)];
+  };
+  const hasBoth = (raw, name) => both(raw).every((s) => s.has(name));
+  const sizeBoth = (raw, n) => both(raw).every((s) => s.size === n);
+
+  // 讀：markread 寫出來的格式
+  ok('空白：檔名帶空白的行認得', hasBoth(`- ${SPACE}（2026-09-30 已處理）\n`, SPACE));
+  ok('括號：檔名帶半形括號的行認得', hasBoth(`- ${HALF}（2026-09-30 已處理）\n`, HALF));
+  ok('括號：檔名帶全形括號的行認得', hasBoth(`- ${FULL}（2026-09-30 已處理）\n`, FULL));
+  ok('空白：只有檔名、沒有註記', hasBoth(`- ${SPACE}\n`, SPACE));
+
+  // 讀：舊格式行不能因為改規則而失效（失效＝歷史已讀全部變回未讀）
+  ok('舊格式：空白後直接接備註', hasBoth('- 訊息_甲→乙_主題_2026-09-01.md 已回執結案\n', '訊息_甲→乙_主題_2026-09-01.md'));
+  ok('舊格式：空白—空白接備註', hasBoth('- 訊息_甲→乙_主題_2026-09-01.md — 已回執結案\n', '訊息_甲→乙_主題_2026-09-01.md'));
+  ok('舊格式：半形括號接備註', hasBoth('- 公告_新規約_2026-09-02.md (2026-09-03 看過)\n', '公告_新規約_2026-09-02.md'));
+  ok('舊格式：帶資料夾前綴＋空白備註', hasBoth('- 公告板/公告_新規約_2026-09-02.md 看過\n', '公告_新規約_2026-09-02.md'));
+  ok('舊格式：帶資料夾前綴＋檔名帶空白', hasBoth(`- 收件匣-乙/${SPACE}（2026-09-30 已處理）\n`, SPACE));
+  ok('舊格式：備註裡提到別的檔，只認開頭那個',
+    sizeBoth('- a.md 已處理，附件_x.md 可直接轉給對方\n', 1) && hasBoth('- a.md 已處理，附件_x.md 可直接轉給對方\n', 'a.md'));
+
+  // 讀：不是記錄的行不能被誤認（誤認＝靜默隱藏一封沒人看過的訊息）
+  ok('安全：開頭不是檔名的整句話，不會把後面提到的路徑當成已讀',
+    both('- 已轉給對方 見 公告板/附件_x.md（原檔）\n').every((s) => !s.has('附件_x.md')));
+  ok('安全：一行概括多個檔（沒有任何一個完整檔名開頭）不算數',
+    sizeBoth('公告板其餘安裝包(arch-hud-v2.5／handoff-v3) — 均已安裝完成，非新訊息\n', 0));
+  ok('安全：標題行與空行不算數', sizeBoth('# team-mailbox 已讀帳（本機）\n\n', 0));
+
+  // 寫→讀：帶空白的檔名記一次就生效、再記一次不重複
+  const p = join(root, 'names-write', 'read.md');
+  let r = markRead([SPACE, HALF, FULL], { ledgerPath: p });
+  ok('寫入：三種檔名都記進去', r.added.length === 3);
+  ok('寫入：detect 讀回來三筆都在', [SPACE, HALF, FULL].every((n) => readLedger(p).has(n)), [...readLedger(p)].join('｜'));
+  r = markRead([SPACE, HALF, FULL], { ledgerPath: p });
+  ok('冪等：再記一次全部跳過（以前會每次多追加一行）', r.added.length === 0 && r.skipped.length === 3);
+  r = markRead([SPACE, FULL], { ledgerPath: p, note: '已回覆', update: true });
+  const text = readFileSync(p, 'utf8');
+  ok('update：帶空白的檔名改得到註記', r.updated?.length === 2 && /- AB X1-LITE 市場調查_全集_v2\.1修訂版\.html（\S+ 已回覆）/.test(text), text);
+  ok('update：檔名帶全形括號也改得到、檔名不被截掉', /- 訊息_甲→乙_提案（第二版）_2026-09-30\.md（\S+ 已回覆）/.test(text), text);
+  ok('update：沒點到的那一行原樣', /- 報告 \(終版\) v2\.md（\S+ 已處理）/.test(text), text);
+  ok('update：行數沒變', text.split('\n').filter((l) => l.startsWith('- ')).length === 3);
+
+  // 端到端：交換區裡有帶空白的檔，記帳後 detect 不再報未讀
+  const ex = join(root, 'names-e2e', 'fake-交換區');
+  mkdirSync(join(ex, '收件匣-測試員'), { recursive: true });
+  mkdirSync(join(ex, '公告板'), { recursive: true });
+  writeFileSync(join(ex, '收件匣-測試員', SPACE), 'x');
+  const cfg = join(root, 'names-e2e', 'config.md');
+  writeFileSync(cfg, `名字：測試員\n交換區：${ex}\n`);
+  const led = join(root, 'names-e2e', 'read.md');
+  ok('端到端：記帳前報 1 筆未讀', detect({ configPath: cfg, ledgerPath: led }).unreadCount === 1);
+  markRead([SPACE], { ledgerPath: led });
+  ok('端到端：記帳後未讀歸零', detect({ configPath: cfg, ledgerPath: led }).unreadCount === 0);
+}
+
 // ── 結果 ─────────────────────────────────────────────────────────
 for (const name of pass) console.log(`  ok  ${name}`);
 console.log(`\n${pass.length} passed, ${fail.length} failed`);

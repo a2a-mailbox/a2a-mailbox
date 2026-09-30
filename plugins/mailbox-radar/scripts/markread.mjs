@@ -31,6 +31,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { ledgerLineName, ledgerNames } from './ledger.mjs';
 import { exchangePaths, ledgerPath as defaultLedgerPath } from './userdata.mjs';
 
 const HEADER = '# team-mailbox 已讀帳（本機）\n';
@@ -42,19 +43,12 @@ export function resolveLedgerPath(p) {
 
 /**
  * 讀出帳上已有的檔名集合。
- * 比對規則刻意與 detect.mjs 的 readLedger 一致：只認每行開頭那一個檔名，
+ * 比對規則與 detect.mjs 的 readLedger 是同一份（ledger.mjs）：只認每行開頭那一個檔名，
  * 並取 basename（帳上可能寫成「公告板/檔名」）。兩邊若不一致，會出現
- * 「記了但雷達還是算未讀」這種最難查的狀況。
+ * 「記了但雷達還是算未讀」這種最難查的狀況，所以不各抄一份。
  */
 export function ledgerEntries(raw) {
-  const seen = new Set();
-  for (const line of String(raw ?? '').split(/\r?\n/)) {
-    const body = line.replace(/^\s*(?:[-*+]|\d+[.)])\s*/, '').trim();
-    const token = body.split(/[（(\s]/)[0];
-    const name = token.split(/[\\/]/).pop();
-    if (/\.(?:md|html)$/i.test(name)) seen.add(name);
-  }
-  return seen;
+  return ledgerNames(raw);
 }
 
 /** 本地日期（到日），註記用。 */
@@ -95,8 +89,7 @@ export function markRead(files, opts = {}) {
   if (updated.length > 0) {
     const want = new Set(updated);
     raw = raw.split(/\r?\n/).map((line) => {
-      const m = line.match(/^\s*-\s+(.+?)(?:（|\s*$)/);
-      const head = m ? m[1].trim() : null;
+      const head = ledgerLineName(line);
       return head && want.has(head) ? `- ${head}（${stamp} ${note}）` : line;
     }).join('\n');
     writeFileSync(path, raw);
