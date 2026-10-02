@@ -14,12 +14,18 @@
 //
 // 檔案格式（markdown 表格，人看機讀）：
 //
-//   | email | 代稱 | 姓名 | 來源 | 狀態 |
-//   |---|---|---|---|---|
-//   | alice@example.com | Alice、小A | 王小艾 | drive | active |
+//   | email | 代稱 | 姓名 | 來源 | 狀態 | 先問人 |
+//   |---|---|---|---|---|---|
+//   | alice@example.com | Alice、小A | 王小艾 | drive | active | |
+//   | bot@example.com | 總管 | | manual | active | 是 |
 //
 //   代稱可多個，用「、」分隔，第一個＝收件匣資料夾後綴（`收件匣-Alice`）。
 //   來源 drive＝由 Drive 分享名單同步；manual＝人工加的。狀態 active＝在用；left＝已離開。
+//   先問人（0.9.0 新增，第六欄）：填「是」＝這個人的信固定先問使用者本人。閘門照樣把他當名單內
+//   （不標陌生、不標異常），但授權下限鎖在 2，分類器只能維持、不能往下調。空白＝一般成員。
+//   用途：會主動寄「請你簽核」這類信的自動化帳號——加進名單才不會每天觸發陌生寄件人警告，
+//   但它的信等於替本人做決定，不能靠分類器每次都判對。
+//   0.8.x 以前的五欄檔照樣讀（第六欄不存在＝一般成員）；舊版程式讀六欄檔會忽略第六欄。
 //   表格以外的行（標題、註解）解析時忽略，可以自由寫。
 //
 // 分工（同 gate.mjs 的兩段式精神）：
@@ -28,7 +34,8 @@
 //
 // 用法：
 //   node contacts.mjs list [--pretty]
-//   node contacts.mjs add <email> <代稱> [--name <姓名>]
+//   node contacts.mjs add <email> <代稱> [--name <姓名>] [--ask-first]
+//   node contacts.mjs ask-first <email 或代稱> [--off]  → 設成（或取消）固定先問人
 //   node contacts.mjs remove <email 或代稱>            → 標 left，不刪列
 //   node contacts.mjs check <email 或代稱>             → 寄信前查對象
 //   node contacts.mjs sync --facts <json 檔> [--dry-run]
@@ -61,11 +68,21 @@ export function splitAliases(s) {
   return String(s ?? '').split(ALIAS_SEP).map((a) => a.trim()).filter(Boolean);
 }
 
+// 「先問人」欄的讀法：空白與明確的否定詞＝一般成員；其餘任何有寫字的值都當「是」。
+// 方向跟來源／狀態欄相反是刻意的——那兩欄打錯字時往「多認一個人」退，這一欄打錯字時往
+// 「先問人」退：認不出來的值若當成一般成員，等於把使用者想鎖住的人靜默放回給分類器。
+const ASK_FIRST_NEGATIVE = /^(|否|不|不是|一般|no|n|false|0|-|－|—)$/i;
+
+export function parseAskFirst(cell) {
+  return !ASK_FIRST_NEGATIVE.test(String(cell ?? '').trim());
+}
+
 /**
- * 把通訊錄檔文字解析成陣列。只認表格行；欄位順序固定 email｜代稱｜姓名｜來源｜狀態。
+ * 把通訊錄檔文字解析成陣列。只認表格行；欄位順序固定 email｜代稱｜姓名｜來源｜狀態｜先問人。
  * 分隔符全形「｜」與半形「|」都認（人手打的常混用）。
  * 不合法的來源／狀態值退成 manual／active——寧可多認一個人，不要因為打錯字把人靜默踢出名單。
- * @returns {Array<{email:string, aliases:string[], name:string, source:string, status:string}>}
+ * 第六欄不存在（0.8.x 以前的五欄檔）＝一般成員；有寫字但認不出來＝先問人（見 parseAskFirst）。
+ * @returns {Array<{email:string, aliases:string[], name:string, source:string, status:string, askFirst:boolean}>}
  */
 export function parseContacts(raw) {
   const out = [];
@@ -82,7 +99,7 @@ export function parseContacts(raw) {
     seen.add(email);
     const source = SOURCES.has((cells[3] ?? '').toLowerCase()) ? cells[3].toLowerCase() : 'manual';
     const status = STATUSES.has((cells[4] ?? '').toLowerCase()) ? cells[4].toLowerCase() : 'active';
-    out.push({ email, aliases: splitAliases(cells[1]), name: cells[2] ?? '', source, status });
+    out.push({ email, aliases: splitAliases(cells[1]), name: cells[2] ?? '', source, status, askFirst: parseAskFirst(cells[5]) });
   }
   return out;
 }
@@ -94,12 +111,13 @@ export function serializeContacts(list, { syncedAt = null } = {}) {
     '> 交換區成員名單，信箱雷達（白名單閘門）與 team-mailbox skill（寄信前查對象）共用。',
     '> 代稱可多個，用「、」分隔，第一個是收件匣資料夾的後綴；代稱與姓名是兩回事，不要合併。',
     '> 來源：drive＝由 Drive 分享名單同步；manual＝人工加入。狀態：active＝在用；left＝已離開（不刪列，寄件會被擋、舊訊息仍認得出是誰）。',
-    '> 改這個檔可以直接用 Claude：「通訊錄加人」「通訊錄移除 <人>」「同步通訊錄」「列出通訊錄」。',
+    '> 先問人：填「是」＝這個人的信固定先問你本人（照樣算名單內、不標異常，只是不自動回覆、也不自動照做）；空白＝一般成員。',
+    '> 改這個檔可以直接用 Claude：「通訊錄加人」「通訊錄移除 <人>」「同步通訊錄」「列出通訊錄」「把 <人> 設成固定先問人」。',
   ];
   if (syncedAt) lines.push(`> 最後同步：${syncedAt}`);
-  lines.push('', '| email | 代稱 | 姓名 | 來源 | 狀態 |', '|---|---|---|---|---|');
+  lines.push('', '| email | 代稱 | 姓名 | 來源 | 狀態 | 先問人 |', '|---|---|---|---|---|---|');
   for (const c of list) {
-    lines.push(`| ${c.email} | ${c.aliases.join('、')} | ${c.name ?? ''} | ${c.source} | ${c.status} |`);
+    lines.push(`| ${c.email} | ${c.aliases.join('、')} | ${c.name ?? ''} | ${c.source} | ${c.status} | ${c.askFirst ? '是' : ''} |`);
   }
   lines.push('');
   return lines.join('\n');
@@ -165,16 +183,19 @@ export function checkRecipient(list, key) {
 /**
  * 加人（或替既有的人補代稱／姓名）。回 {list, action}，action ∈ added | updated | reactivated。
  * 既有的人：代稱只增不減；姓名只在原本空白時填（人工填過的不覆蓋）；left 的人會被重新啟用。
+ * askFirst 只在明確給 true 時生效，而且只會設上、不會取消：重複 add 一個已經設成先問人的人，
+ * 不能因為這次沒帶旗標就把鎖解掉。取消只走 setAskFirst(…, false)。
  */
-export function addContact(list, { email, alias, name = '' }) {
+export function addContact(list, { email, alias, name = '', askFirst = false }) {
   const e = normalizeEmail(email);
   if (!e.includes('@')) throw new Error(`email 格式不對：${email}`);
   const aliases = splitAliases(alias);
   const existing = list.find((c) => c.email === e);
   if (!existing) {
-    const entry = { email: e, aliases, name: name.trim(), source: 'manual', status: 'active' };
+    const entry = { email: e, aliases, name: name.trim(), source: 'manual', status: 'active', askFirst: askFirst === true };
     return { list: [...list, entry], action: 'added', entry };
   }
+  if (askFirst === true) existing.askFirst = true;
   let action = 'updated';
   for (const a of aliases) if (!existing.aliases.includes(a)) existing.aliases.push(a);
   if (name.trim() && !existing.name) existing.name = name.trim();
@@ -188,6 +209,20 @@ export function removeContact(list, key) {
   if (!entry) return { list, entry: null };
   entry.status = 'left';
   return { list, entry };
+}
+
+/**
+ * 設成（或取消）固定先問人。回 {list, entries}；找不到人時 entries 是空陣列。
+ * 用 email 指定＝只動那一列。用代稱或姓名指定＝動「帶這個代稱的每一列」：同一個人可以有
+ * 好幾個 Google 帳號、通訊錄就是好幾列同代稱，只鎖第一列的話，他換另一個帳號寫的信就繞過去了。
+ */
+export function setAskFirst(list, key, on = true) {
+  const k = String(key ?? '').trim();
+  if (!k) return { list, entries: [] };
+  const byEmail = list.find((c) => c.email === normalizeEmail(k));
+  const entries = byEmail ? [byEmail] : list.filter((c) => c.aliases.includes(k) || (c.name && c.name === k));
+  for (const c of entries) c.askFirst = on === true;
+  return { list, entries };
 }
 
 // ── Drive 同步（合併規則）─────────────────────────────────────
@@ -210,6 +245,7 @@ export function removeContact(list, key) {
 //        a. 代稱＝既有列的某個代稱或姓名  b. 代稱＝顯示名（names 裡的值）
 //      其餘代稱與 email 都留在 unmapped 裡，交給 Claude 問使用者，**不猜**
 //   6. 已知代稱不因同步而改名（人工代稱優先於任何推斷）
+//   7. 「先問人」是人工設定，同步不碰：既有列原樣保留，新列一律是一般成員
 
 function autoAliasMap(list, facts) {
   const map = { ...(facts.aliasMap ?? {}) };
@@ -266,7 +302,7 @@ export function mergeFromDrive(list, facts) {
   // 規則 3：新 email
   for (const email of members) {
     if (next.some((c) => c.email === email)) continue;
-    next.push({ email, aliases: [], name: '', source: 'drive', status: 'active' });
+    next.push({ email, aliases: [], name: '', source: 'drive', status: 'active', askFirst: false });
     report.added.push(email);
   }
 
@@ -372,11 +408,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       out({ path: resolveContactsPath(cPath), contacts: loadContacts(cPath) });
     } else if (cmd === 'add') {
       const [email, alias] = positional;
-      if (!email || !alias) throw new Error('用法: contacts.mjs add <email> <代稱> [--name <姓名>] [--exchange <交換區名稱>]');
+      if (!email || !alias) throw new Error('用法: contacts.mjs add <email> <代稱> [--name <姓名>] [--ask-first] [--exchange <交換區名稱>]');
       const list = loadContacts(cPath);
-      const r = addContact(list, { email, alias, name: flag(args, '--name') ?? '' });
+      const r = addContact(list, { email, alias, name: flag(args, '--name') ?? '', askFirst: args.includes('--ask-first') });
       const path = saveContacts(r.list, cPath);
       out({ action: r.action, entry: r.entry, path });
+    } else if (cmd === 'ask-first') {
+      const [key] = positional;
+      if (!key) throw new Error('用法: contacts.mjs ask-first <email 或代稱> [--off] [--exchange <交換區名稱>]');
+      const list = loadContacts(cPath);
+      const on = !args.includes('--off');
+      const r = setAskFirst(list, key, on);
+      if (r.entries.length === 0) { out({ action: 'not-found', key }); process.exit(1); }
+      const path = saveContacts(r.list, cPath);
+      out({ action: on ? 'ask-first-on' : 'ask-first-off', entries: r.entries, path });
     } else if (cmd === 'remove') {
       const [key] = positional;
       if (!key) throw new Error('用法: contacts.mjs remove <email 或代稱> [--exchange <交換區名稱>]');
@@ -409,7 +454,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     } else if (cmd === 'migrate') {
       out(migrateWhitelist());
     } else {
-      console.error('用法: contacts.mjs list|add|remove|check|sync|migrate（詳見檔頭註解）');
+      console.error('用法: contacts.mjs list|add|ask-first|remove|check|sync|migrate（詳見檔頭註解）');
       process.exit(2);
     }
   } catch (err) {

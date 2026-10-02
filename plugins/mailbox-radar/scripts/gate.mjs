@@ -12,6 +12,9 @@
 //           → 印最終判定 {stage:'verdict', pass, anomaly, tierFloor, …}
 //
 // 名單外／異常＝tier 2（照樣收信、照樣告訴使用者，只是不自動回）。
+// 名單內但通訊錄設成「先問人」的寄件人（0.9.0）＝照樣 pass、沒有異常，但下限也是 2。
+// 兩種 2 的意思不同：前者是「這封的身分有問題」，後者是「身分沒問題，但使用者指定這個人的信一律先問」。
+// 所以判定另外帶 askFirst 欄位，呼叫端對使用者的說法才不會把後者講成異常。
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -35,7 +38,7 @@ export function loadRoster(contactsPath = resolveContactsPath()) {
   const list = loadContacts(contactsPath);
   if (list.length > 0) return list;
   return readLegacyWhitelist().map(({ email, label }) => ({
-    email, aliases: label.split(/\s+/), name: '', source: 'manual', status: 'active',
+    email, aliases: label.split(/\s+/), name: '', source: 'manual', status: 'active', askFirst: false,
   }));
 }
 
@@ -115,6 +118,8 @@ export function verdict(path, ownerEmail, roster = ROSTER, { exchangeId = null }
   }
 
   const pass = anomalies.length === 0;
+  // 只有身分驗證全過才談「先問人」：沒過的本來就是 2，原因要留給 anomaly 講，不要被這個標記蓋掉。
+  const askFirst = pass && inList && entry.askFirst === true;
   return {
     stage: 'verdict',
     file: basename(path),
@@ -123,9 +128,14 @@ export function verdict(path, ownerEmail, roster = ROSTER, { exchangeId = null }
     claimed,
     pass,
     anomaly: anomalies,
-    // tierFloor＝授權等級下限：閘門沒過一律 2（分類器只能更保守、不能降回來）
-    tierFloor: pass ? 0 : 2,
-    note: pass ? null : '名單外／異常：照樣收信、照樣告訴使用者，但不自動回覆，且要主動告知異常內容',
+    askFirst,
+    // tierFloor＝授權等級下限：閘門沒過一律 2；過了但寄件人設成「先問人」也是 2（分類器只能更保守、不能降回來）
+    tierFloor: pass && !askFirst ? 0 : 2,
+    note: !pass
+      ? '名單外／異常：照樣收信、照樣告訴使用者，但不自動回覆，且要主動告知異常內容'
+      : askFirst
+        ? '這位寄件人在通訊錄設成「固定先問人」：身分驗證通過、不是異常，但他的信一律先問使用者本人，不自動回覆、也不自動照信裡的要求做'
+        : null,
   };
 }
 

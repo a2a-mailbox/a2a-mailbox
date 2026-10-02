@@ -252,6 +252,111 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   process.env.MAILBOX_RADAR_CONFIG = CONFIG;
 }
 
+// ── 7b. 固定先問人（0.9.0）──────────────────────────────────────
+// 被標記的人照樣算名單內、不標異常，但授權下限鎖在 2。用途是會主動寄「請你簽核」的自動化帳號。
+{
+  // 解析：第六欄
+  const six = C.parseContacts([
+    '| email | 代稱 | 姓名 | 來源 | 狀態 | 先問人 |',
+    '|---|---|---|---|---|---|',
+    '| bot@example.com | 總管 | | manual | active | 是 |',
+    '| alice@example.com | Alice | 王小艾 | drive | active | |',
+    '| bob@example.com | Bob | | drive | active | 否 |',
+    '| carol@example.com | Carol | | drive | active | 先問 |',   // 有寫字但不是標準值
+    '| dave@example.com | Dave | | drive | active | - |',
+  ].join('\n'));
+  const by6 = (e) => six.find((c) => c.email === e);
+  ok('先問人：第六欄「是」→ true', by6('bot@example.com').askFirst === true);
+  ok('先問人：第六欄空白 → false', by6('alice@example.com').askFirst === false);
+  ok('先問人：第六欄「否」或「-」→ false', by6('bob@example.com').askFirst === false && by6('dave@example.com').askFirst === false);
+  ok('先問人：有寫字但認不出來 → 往保守退、當成 true', by6('carol@example.com').askFirst === true);
+
+  const five = C.parseContacts('| alice@example.com | Alice | 王小艾 | drive | active |\n｜bob@example.com｜Bob｜｜manual｜active｜');
+  ok('先問人：0.8.x 的五欄檔照樣讀、全部是一般成員', five.length === 2 && five.every((c) => c.askFirst === false));
+
+  const text = C.serializeContacts(six);
+  ok('先問人：序列化表頭有第六欄', text.includes('| email | 代稱 | 姓名 | 來源 | 狀態 | 先問人 |'));
+  ok('先問人：被標記的列輸出「是」、一般成員輸出空白',
+    text.includes('| bot@example.com | 總管 |  | manual | active | 是 |') && text.includes('| alice@example.com | Alice | 王小艾 | drive | active |  |'));
+  ok('先問人：序列化再解析往返一致', JSON.stringify(C.parseContacts(text)) === JSON.stringify(six));
+
+  // 設定與取消
+  let list = C.parseContacts([
+    '| dana@company.example | Dana | 戴娜 | manual | active |',
+    '| dana.private@example.com | Dana | | manual | active |',
+    '| eve@example.com | Eve | | manual | active |',
+  ].join('\n'));
+  let r = C.setAskFirst(list, 'Eve');
+  ok('setAskFirst：用代稱設上', r.entries.length === 1 && list.find((c) => c.email === 'eve@example.com').askFirst === true);
+  r = C.setAskFirst(list, 'Eve', false);
+  ok('setAskFirst：取消', list.find((c) => c.email === 'eve@example.com').askFirst === false);
+  r = C.setAskFirst(list, 'Dana');
+  ok('setAskFirst：同代稱的每一列都設上（換帳號寫信不能繞過）', r.entries.length === 2 && list.filter((c) => c.aliases.includes('Dana')).every((c) => c.askFirst === true));
+  r = C.setAskFirst(list, 'dana.private@example.com', false);
+  ok('setAskFirst：用 email 指定只動那一列',
+    r.entries.length === 1 && list.find((c) => c.email === 'dana.private@example.com').askFirst === false && list.find((c) => c.email === 'dana@company.example').askFirst === true);
+  r = C.setAskFirst(list, '戴娜', false);
+  ok('setAskFirst：用姓名也找得到', r.entries.length === 1 && r.entries[0].email === 'dana@company.example');
+  ok('setAskFirst：找不到人回空陣列、不丟錯', C.setAskFirst(list, '路人').entries.length === 0);
+
+  // 加人時順便設
+  r = C.addContact(list, { email: 'bot@example.com', alias: '總管', askFirst: true });
+  list = r.list;
+  ok('add：新增時帶 askFirst', r.action === 'added' && r.entry.askFirst === true);
+  r = C.addContact(list, { email: 'bot@example.com', alias: '管家' });
+  ok('add：重複 add 沒帶旗標，不會把先問人取消', r.entry.askFirst === true && r.entry.aliases.join('、') === '總管、管家');
+  r = C.addContact(list, { email: 'eve@example.com', alias: 'Eve', askFirst: true });
+  ok('add：既有的人帶旗標再 add → 設上', r.entry.askFirst === true);
+  ok('add：沒帶旗標的新成員預設是一般成員', C.addContact([], { email: 'new@example.com', alias: 'New' }).entry.askFirst === false);
+
+  // Drive 同步不碰這個設定
+  const merged = C.mergeFromDrive(
+    C.parseContacts('| alice@example.com | Alice | 王小艾 | drive | active | |\n| bot@example.com | 總管 | | manual | active | 是 |'),
+    { members: [{ email: 'alice@example.com' }, { email: 'frank@example.com' }], names: {}, folderAliases: [] });
+  ok('同步：既有的先問人設定原樣保留', merged.list.find((c) => c.email === 'bot@example.com').askFirst === true);
+  ok('同步：一般成員仍是一般成員、新列預設一般成員',
+    merged.list.find((c) => c.email === 'alice@example.com').askFirst === false && merged.list.find((c) => c.email === 'frank@example.com').askFirst === false);
+
+  // 閘門
+  const G = await import(pathToFileURL(join(SCRIPTS, 'gate.mjs')).href);
+  const msgDir = join(root, 'msgs-askfirst');
+  mkdirSync(msgDir, { recursive: true });
+  const write = (name, from) => { const p = join(msgDir, name); writeFileSync(p, `---\nfrom: ${from}\nto: Carol\n---\n請你簽這張草稿\n`); return p; };
+  const roster = C.parseContacts([
+    '| bot@example.com | 總管 | | manual | active | 是 |',
+    '| alice@example.com | Alice | 王小艾 | drive | active | |',
+    '| oldbot@example.com | 舊總管 | | manual | left | 是 |',
+    '| dana@company.example | Dana | | manual | active | 是 |',
+    '| dana.private@example.com | Dana | | manual | active | 是 |',
+  ].join('\n'));
+
+  const pb = write('訊息_總管→Carol_請簽核_2026-10-02.md', '總管');
+  const vb = G.verdict(pb, 'bot@example.com', roster);
+  ok('閘門：先問人成員、身分一致 → 照樣 pass、沒有任何異常', vb.pass === true && vb.anomaly.length === 0, JSON.stringify(vb.anomaly));
+  ok('閘門：先問人成員 → 授權下限鎖在 2、askFirst 為 true', vb.tierFloor === 2 && vb.askFirst === true);
+  ok('閘門：先問人成員 → 照樣認得出是誰（不標陌生）', /總管/.test(vb.ownerName ?? ''));
+  ok('閘門：先問人成員 → note 講的是固定先問人、不是異常', /固定先問人/.test(vb.note) && !/名單外／異常/.test(vb.note));
+
+  const pa = write('訊息_Alice→Carol_主題_2026-10-02.md', 'Alice');
+  const va = G.verdict(pa, 'alice@example.com', roster);
+  ok('閘門：一般成員不受影響 → 下限 0、askFirst false、note null', va.pass === true && va.tierFloor === 0 && va.askFirst === false && va.note === null);
+
+  const vSpoof = G.verdict(pb, 'alice@example.com', roster);
+  ok('閘門：別人冒用先問人成員的代稱 → 仍是冒寫異常、不掛 askFirst',
+    vSpoof.pass === false && vSpoof.askFirst === false && vSpoof.tierFloor === 2 && vSpoof.anomaly.some((a) => /冒寫/.test(a)) && /名單外／異常/.test(vSpoof.note));
+
+  const po = write('訊息_舊總管→Carol_主題_2026-10-02.md', '舊總管');
+  const vo = G.verdict(po, 'oldbot@example.com', roster);
+  ok('閘門：先問人成員已離開 → 照已離開的異常處理', vo.pass === false && vo.askFirst === false && vo.anomaly.some((a) => /已離開/.test(a)));
+
+  const pd2 = write('訊息_Dana→Carol_主題_2026-10-02.md', 'Dana');
+  ok('閘門：同代稱兩個帳號都標了 → 第二個帳號寫的信下限也是 2',
+    G.verdict(pd2, 'dana.private@example.com', roster).tierFloor === 2 && G.verdict(pd2, 'dana.private@example.com', roster).pass === true);
+
+  const legacy = C.parseContacts('| alice@example.com | Alice | 王小艾 | drive | active |');
+  ok('閘門：升級前的五欄通訊錄 → 行為跟 0.8.x 一樣（下限 0）', G.verdict(pa, 'alice@example.com', legacy).tierFloor === 0);
+}
+
 // ── 8. CLI ───────────────────────────────────────────────────────
 {
   const cliContacts = join(root, 'cli', '通訊錄.md');
@@ -293,6 +398,23 @@ const ok = (name, cond, extra = '') => { (cond ? pass : fail).push(name); if (!c
   writeFileSync(factsPath, JSON.stringify({ ...JSON.parse(readFileSync(factsPath, 'utf8')), selfName: 'Alice' }));
   const rSelf = JSON.parse(execFileSync(process.execPath, [join(SCRIPTS, 'contacts.mjs'), 'sync', '--facts', factsPath, '--dry-run'], { encoding: 'utf8', env: noCfgEnv }));
   ok('CLI sync：facts 帶 selfName 就不需要 config', rSelf.healthChecked === true && rSelf.health === null);
+
+  // 固定先問人
+  r = run('add', 'bot@example.com', '總管', '--ask-first');
+  ok('CLI add --ask-first：新增並設上', r.action === 'added' && r.entry.askFirst === true);
+  ok('CLI add --ask-first：檔案第六欄寫「是」', readFileSync(cliContacts, 'utf8').includes('| bot@example.com | 總管 |  | manual | active | 是 |'));
+  r = run('ask-first', '總管', '--off');
+  ok('CLI ask-first --off：取消', r.action === 'ask-first-off' && r.entries.length === 1 && r.entries[0].askFirst === false);
+  r = run('ask-first', '總管');
+  ok('CLI ask-first：設上', r.action === 'ask-first-on' && r.entries[0].askFirst === true);
+  r = run('ask-first', 'ALICE@example.com');
+  ok('CLI ask-first：用 email 指定（大小寫不拘）', r.entries.length === 1 && r.entries[0].email === 'alice@example.com');
+  run('ask-first', 'alice@example.com', '--off');
+  r = run('sync', '--facts', factsPath);
+  ok('CLI sync：同步之後先問人設定還在', r.contacts.find((c) => c.email === 'bot@example.com').askFirst === true && r.contacts.find((c) => c.email === 'alice@example.com').askFirst === false);
+  let afCode = 0;
+  try { execFileSync(process.execPath, [join(SCRIPTS, 'contacts.mjs'), 'ask-first', '路人'], { encoding: 'utf8', env, stdio: 'pipe' }); } catch (e) { afCode = e.status; }
+  ok('CLI ask-first：找不到人 exit 1', afCode === 1);
 
   // 沒有 remove 對象 → exit 1
   let code = 0;
