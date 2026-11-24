@@ -27,6 +27,7 @@ import { FAIL_THRESHOLD, formatWarning, loadHealth, recordFailure, recordSuccess
 import { CLASSIFIER_HEALTH, SESSION_STALE_MS, heartbeatFromOtherVersion, heartbeatPath, readHeartbeats, resolveDataDir, sessionKey, sessionWatcherStatus, watcherStatus, watchersDir } from './paths.mjs';
 import { configPath, contactsPath, ensureUserData } from './userdata.mjs';
 import { loadContacts, migrateWhitelist } from './contacts.mjs';
+import { authOutlookNote, healthNote } from './classifier-auth.mjs';
 
 // 搭便車注入的掃描節流：同一個 session 內，最短 SCAN_COOLDOWN_MS 才會再掃一次交換區。
 // 掃一次只要 0.3 毫秒、零 token，所以節流不是為了省成本，是為了不在密集工具呼叫時
@@ -407,18 +408,28 @@ async function main() {
       context = context ? context + '\n\n' + b : b;
       trace([`額外交換區讀不到=${broken.map((x) => x.id).join(',')}`]);
     }
-    // 分類器上次整個失敗過 → 開場講一次（成功一次就會自己清掉）
+    // 分類器上次出過事 → 開場講一次（完全恢復一次就會自己清掉）。文字在 classifier-auth.mjs。
+    let healthShown = false;
     try {
       const h = JSON.parse(readFileSync(join(dataDir, CLASSIFIER_HEALTH), 'utf8'));
-      const c = [
-        `【交換區信箱】⚠️ 自動代答的分類器上次整個跑不起來（${String(h.at).slice(0, 16).replace('T', ' ')} UTC）。在修好之前，收到的每一封都會當成「先問過本人才處理」，不會自動回。請用一句話告知使用者。`,
-        h.authLike
-          ? '看起來是終端機版 Claude 的登入過期了（桌面版登入不算）。請使用者開終端機跑 claude，進去輸入 /login 重新登入一次。'
-          : `原因：${String(h.detail ?? '').slice(0, 300)}`,
-      ].join('\n');
+      const c = healthNote(h, HERE);
       context = context ? context + '\n\n' + c : c;
-      trace(['分類器不可用=已提示']);
+      healthShown = true;
+      trace([h.ok ? '分類器token被拒=已提示' : '分類器不可用=已提示']);
     } catch {}
+    // 還沒出事、但快出事（0.10.0）：分類器專用 token 快到期，或沒設 token 而終端機登入快結束。
+    // 上面已經講過分類器出事的話就不重複講。
+    if (!healthShown) {
+      try {
+        const o = authOutlookNote(dataDir, HERE, now);
+        if (o) {
+          context = context ? context + '\n\n' + o : o;
+          trace(['分類器登入預警=已提示']);
+        }
+      } catch (err) {
+        trace([`分類器登入預警例外=${String(err?.message ?? err)}`]);
+      }
+    }
     // 通訊錄空的 → 提示一次（讀取失敗也當空：提示比靜默安全）
     let rosterEmpty = false;
     try { rosterEmpty = loadContacts().filter((c) => c.status === 'active').length === 0; } catch { rosterEmpty = true; }

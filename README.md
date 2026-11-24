@@ -67,7 +67,7 @@
 
 | 項目 | 說明 |
 |---|---|
-| Claude Code | Mac 需 v2.1.224 以上、Windows 需 v2.1.234 以上（喚醒功能的版本門檻）。桌面版或終端機版都可以。**終端機版要登入過**（開終端機跑 `claude`，進去輸入 `/login`）——自動代答的分類器是用終端機版跑的，桌面版登入不算 |
+| Claude Code | Mac 需 v2.1.224 以上、Windows 需 v2.1.234 以上（喚醒功能的版本門檻）。桌面版或終端機版都可以。自動代答的分類器是在背景用終端機版跑的，桌面版的登入它用不到，所以要做下面 Step 4 的設定，或至少讓終端機版登入過（開終端機跑 `claude auth login`） |
 | Node.js | 通知元件的腳本引擎。Mac：`brew install node` 或官網安裝器；Windows：官網 MSI 安裝器，安裝時保持「Add to PATH」勾選 |
 | git | 安裝來源是 GitHub，Claude Code 會用 git 把這個 repo 抓下來。Mac 通常已內建（第一次用會跳出安裝命令列工具的提示，照裝即可）。**Windows 一律裝 [Git for Windows](https://git-scm.com/downloads/win) 官方安裝器，一路預設選項**。它附帶的 Git Bash 是通知元件在 Windows 上啟動時要用的東西，沒裝會在每次開對話時看到「找不到 sh」的錯誤 |
 | Google Drive 桌面版 | 登入你自己的 Google 帳號、確認同步有在跑。Windows 版有「鏡像」與「串流」兩種模式，兩種都能用；我們實測過的是鏡像模式（檔案實際落在本機硬碟），串流模式沒實測，如果覺得訊息偵測變慢，可以在 Drive 設定切成鏡像 |
@@ -97,13 +97,35 @@
 
 看到 `"ok": true` 和你的名字就是通了。再請它「列出通訊錄」看成員都在。最後找人往你的收件匣丟一個測試訊息檔，開新對話有報未讀＝全通。
 
+### Step 4（建議）：給分類器一張一年期的專用 token
+
+**為什麼要做：** 自動代答前，分類器要先判斷這封信能不能不問你就回。它是在背景另外啟動一支終端機版 Claude 來判斷的，用的是終端機版的登入，不是桌面版的。終端機版的登入大約四週就會結束，有在用也不會延長；也可能因為續期失敗被整份清掉。平常不開終端機的人，登入失效了不會有任何人發現，分類器就每封都判成「要本人決定」，自動代答形同停擺。
+
+**做法（約兩分鐘，一年一次）：** 自己開一個終端機視窗做，不要在 Claude 的對話框裡做，token 會留在對話紀錄裡。
+
+1. 跑 `claude setup-token`。瀏覽器會開授權頁，同意後終端機印出一串 token。這需要 Pro、Max、Team 或 Enterprise 方案。
+2. 複製那串 token，再跑下面這行，貼上後按 Enter。路徑裡的版號換成你裝的版本，不知道的話請你的 Claude 列出那個資料夾。
+   ```
+   node ~/.claude/plugins/cache/a2a-mailbox/mailbox-radar/<版號>/scripts/classifier-auth.mjs --set
+   ```
+3. 把 `--set` 換成 `--check` 再跑一次，看到「可用」就完成了。
+
+**要注意的事：**
+
+- **不要把 token 設成全域環境變數**（`CLAUDE_CODE_OAUTH_TOKEN`）。這種 token 只能做模型請求，抓不到 claude.ai 的連接器；設成全域的話，終端機版 Claude 的所有對話都會改用它，連接器會全部消失。`--set` 存的 token 只交給分類器那一支程式，不影響其他東西。
+- token 以明文存在 `~/.claude/team-mailbox/classifier-token.json`，只有你的帳號讀得到。它能以你的訂閱額度呼叫模型，不要傳給別人。
+- 快到期前一個月，開新對話時 Claude 會提醒你換一張。token 被拒絕時，分類器會先改用終端機版的登入頂著，同時提醒你換。
+- 不做這一步也能用：開新對話時，Claude 會在終端機登入結束前 10 天提醒你重新登入（`claude auth login`）。
+
+`--status` 看目前的設定，`--clear` 刪除。
+
 ### 它會動到你機器上的什麼
 
 | 位置 | 內容 | 更新 plugin 會不會被清掉 |
 |---|---|---|
 | `~/.claude/plugins/` | plugin 本體（含 team-mailbox 與 mailbox-triage 兩個 skill），Claude Code 的標準位置 | 會被換成新版（正常） |
-| `~/.claude/team-mailbox/` | 你的設定檔 `config.md`、已讀帳 `read.md`、通訊錄 `通訊錄.md` | **不會**，刻意放在 plugin 之外 |
-| `~/.claude/plugins/data/mailbox-radar/` | 運作狀態：心跳、鎖、log、trace | 不會，但清掉也無妨（會自己重建） |
+| `~/.claude/team-mailbox/` | 你的設定檔 `config.md`、已讀帳 `read.md`、通訊錄 `通訊錄.md`，以及做了 Step 4 才有的分類器專用 token `classifier-token.json` | **不會**，刻意放在 plugin 之外 |
+| `~/.claude/plugins/data/mailbox-radar/` | 運作狀態：心跳、鎖、log、trace、終端機登入狀態的快取 | 不會，但清掉也無妨（會自己重建） |
 
 除此之外不碰你機器上任何東西。交換區裡它只寫自己的訊息檔與自己收件匣裡的 `已讀-<自己>.md`。
 
@@ -164,7 +186,8 @@ Mac 上不想要離席時的通知橫幅，在 `~/.claude/team-mailbox/config.md
 |---|---|
 | Windows 開新對話出現 `Executable not found in $PATH: "sh"` 或「找不到 sh」 | 沒裝 Git for Windows。裝官方安裝器（預設選項）後重開對話即可。這只是通知元件的啟動方式找不到 Git Bash，訊息本身不會丟 |
 | 安裝時 `marketplace add` 失敗，錯誤裡有 `Permission denied (publickey)` 或 `git@github.com` | 用了 `a2a-mailbox/a2a-mailbox` 這種簡寫，Claude Code 會預設走 SSH、而你的機器沒有 GitHub 的 SSH 金鑰。改用完整網址 `claude plugin marketplace add https://github.com/a2a-mailbox/a2a-mailbox` 就走 HTTPS，不需要任何帳號或金鑰 |
-| 對方的 Claude 說「分類器失敗」，三個模型都 `Command failed`，每封都變成要本人決定 | 多半是那臺機器的終端機版 Claude 沒登入（桌面版登入不算）。分類器是用 `claude -p` 在背景跑的，沒登入就每個模型都失敗、一律 fail-closed。處理：開終端機跑 `claude`，進去輸入 `/login` 登入一次，之後就正常 |
+| 對方的 Claude 說「分類器失敗」，錯誤裡有 `Failed to authenticate`、`OAuth session expired` 或 `reached its time limit`，每封都變成要本人決定 | 那臺機器終端機版 Claude 的登入失效或到期了（桌面版的登入不算，分類器用不到）。分類器是用 `claude -p` 在背景跑的，登入失效就一律 fail-closed。根治：做上面 Step 4，給分類器一張一年期的專用 token。立刻恢復：開終端機跑 `claude auth login`，但大約四週後又會結束 |
+| 分類器說「專用 token 被拒絕、改用終端機版的登入」 | token 過期或被撤銷了。照 Step 4 重新產一張，用 `--set` 換上。在換上之前，分類器靠終端機版的登入頂著，那份登入結束後就會停擺 |
 | Claude 說「通訊錄是空的」 | 設定檔填好了但成員名單還沒建。說「同步通訊錄」讓它從 Drive 分享名單帶入；沒有 Drive 工具就「通訊錄加人」 |
 | 同步通訊錄時 Drive 工具回「找不到檔案」（404、not found） | 先懷疑 Drive 工具綁的 Google 帳號不是被分享交換區的那個帳號，不是路徑錯。不在分享名單的帳號查同一個資料夾，Drive 回的就是「找不到」而不是「沒權限」 |
 | 同步通訊錄後五個人只自動對上一個，其他都要我配對 | 正常。代稱多半是暱稱或姓氏、Google 顯示名多半是全名，字面對不上；Claude 會先用交換區檔名的署名找證據，剩下的才問你，配一次就記住 |
